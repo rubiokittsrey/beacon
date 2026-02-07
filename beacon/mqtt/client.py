@@ -16,7 +16,6 @@ class MQTTClient:
         self.pw = pw
 
         # queues
-        self.log_queue: multiprocessing.Queue | None = None
         self.command_queue = multiprocessing.Queue()
         self.data_queue = multiprocessing.Queue()
 
@@ -33,9 +32,11 @@ class MQTTClient:
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
 
+        self.log_queue: multiprocessing.Queue | None = None
         self.logger = logging.getLogger(__name__)
 
     def start(self, log_queue: multiprocessing.Queue):
+        # setup logger for this sub process
         self.log_queue = log_queue
         setup_worker_logger(self.log_queue)
 
@@ -54,7 +55,8 @@ class MQTTClient:
             self.logger.info("MQTT Client received KeyboardInterrupt")
         finally:
             self.logger.info("MQTT Client shutting down")
-            self.client.loop_stop()
+            self.client.disconnect()
+            time.sleep(0.2)
             self.client.disconnect()
 
     def shutdown(self):
@@ -62,15 +64,11 @@ class MQTTClient:
 
     def _connect_loop(self):
         try:
+            self.client.reconnect_delay_set(min_delay=1, max_delay=60)
             self.client.connect("localhost", 1883, 60)
             self.client.loop_start()
         except Exception:
             self.logger.exception("Could not connect to broker")
-            return
-
-        # subscribe after connection established
-        self.client.message_callback_add("test", self._temp_handler)
-        self.client.subscribe("test")
 
     def _temp_handler(
         self, client: paho_mqtt.Client, userdata: Any, message: paho_mqtt.MQTTMessage
@@ -84,11 +82,16 @@ class MQTTClient:
             {"topic": message.topic, "payload": message.payload.decode(), "timestamp": time.time()}
         )
 
-    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
+    def _on_connect(self, client, userdata, flags, reason_code, properties):
         if reason_code == 0:
             self.logger.info("Connected to the broker")
+
+            client.message_callback_add("test", self._temp_handler)
+            client.subscribe("test")
+
         else:
             self.logger.error("Failed to connect: %s", reason_code)
 
+    # TODO: handle disconnects by reconnecting the client
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
         self.logger.warning("Disconnected from broker: %s", reason_code)
