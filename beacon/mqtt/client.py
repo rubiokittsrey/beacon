@@ -138,7 +138,7 @@ class BeaconMQTTClient:
         self._logger.info("connected to broker")
 
         # resubscribe on reconnect using desired subscriptions
-        for topic, qos in self._retained_subs:
+        for topic, qos in list(self._retained_subs.items()):
             try:
                 client.subscribe(topic, qos=qos)
                 self._logger.info("resubscribed topic=%s qos=%s", topic, qos)
