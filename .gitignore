@@ -1,0 +1,31 @@
+# byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# poetry virtual environment
+.venv/
+
+# environment variables file (if you use one)
+.env
+
+# poetry.lock
+
+# ide files
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+
+# build / distribution directories
+build/
+dist/
+*.egg-info/
+.eggs/
