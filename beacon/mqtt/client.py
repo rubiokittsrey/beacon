@@ -130,7 +130,7 @@ class BeaconMQTTClient:
     # paho callbacks  #
     # ----------------#
 
-    def _on_connect(self, client, userdata, flags, reason_code, properties) -> None:
+    def _on_connect(self, client, userdata, flags, reason_code, properties) -> None:  # noqa: ARG002
         if reason_code != 0:
             self._logger.error("failed to connect reason_code=%s", reason_code)
             return
@@ -145,10 +145,10 @@ class BeaconMQTTClient:
             except Exception:
                 self._logger.exception("resubscribe failed topic=%s", topic)
 
-    def _on_disconnect(self, client, userdata, flags, reason_code, properties=None) -> None:
+    def _on_disconnect(self, client, userdata, flags, reason_code, properties=None) -> None:  # noqa: ARG002
         self._logger.warning("disconnected from broker reason_code=%s", reason_code)
 
-    def _on_message(self, client, userdata, message: paho_mqtt.MQTTMessage) -> None:
+    def _on_message(self, client, userdata, message: paho_mqtt.MQTTMessage) -> None:  # noqa: ARG002
         # handles incoming mqtt messages
         # runs in paho's netowrk thread
         try:
