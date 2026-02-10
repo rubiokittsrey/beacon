@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from beacon.mqtt import BeaconMQTTClient, Handler, MQTTBindings, PublisherSpec
+from beacon.utils.logging_conf import AsyncLogging, LoggingConfig, new_run_log_dir
 
 
 class Beacon:
@@ -32,11 +33,12 @@ class Beacon:
         self.mqtt_outgoing_queue: asyncio.Queue[Any] = asyncio.Queue()
 
         # logging
-        self._logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger(__name__)
+        self._async_logging: AsyncLogging | None = None
 
     async def _load_config(self) -> None:
         # TODO: setup config + handling
-        self._logger.warning("config not setup")
+        self.logger.warning("config not setup")
 
     # ----------------#
     # signal handling #
@@ -48,7 +50,7 @@ class Beacon:
 
         def _request_shutdown(sig: int) -> None:
             sig_name = signal.Signals(sig).name
-            self._logger.info("received shutdown signal: %s", sig_name)
+            self.logger.info("received shutdown signal: %s", sig_name)
 
             # schedule shutdown as a task
             # adding this task to the tracked tasks (self._tasks) will cause a maximum recursion depth
@@ -70,12 +72,16 @@ class Beacon:
         if self._shutdown_event.is_set():
             return
 
-        self._logger.info("shutting down")
+        self.logger.info("shutting down")
         self._shutdown_event.set()
 
         # stop mqtt client
         if self._mqtt_client:
             await self._mqtt_client.stop()
+
+        # stop logging
+        if self._async_logging:
+            self._async_logging.stop()
 
         # cancel all tasks
         await self._cancel_tasks()
@@ -94,10 +100,9 @@ class Beacon:
     # -------------#
 
     async def start(self) -> None:
-        # setup logging before everything
         self._setup_logging()
 
-        self._logger.info("starting %s", self.name)
+        self.logger.info("starting %s", self.name)
         await self._load_config()
 
         try:
@@ -117,7 +122,7 @@ class Beacon:
             await self._shutdown_event.wait()
 
         except Exception:
-            self._logger.exception("fatal error in beacon")
+            self.logger.exception("fatal error in beacon")
             raise
 
         finally:
@@ -168,7 +173,7 @@ class Beacon:
     # running a single background task for one periodic publisher
     async def _run_publisher(self, pub: PublisherSpec) -> None:
         assert pub.every_s is not None
-        self._logger.info("starting publisher topic=%s every=%ss", pub.topic, pub.every_s)
+        self.logger.info("starting publisher topic=%s every=%ss", pub.topic, pub.every_s)
 
         while not self._shutdown_event.is_set():
             try:
@@ -185,7 +190,7 @@ class Beacon:
             except asyncio.CancelledError:
                 break
             except Exception:
-                self._logger.exception("publisher error topic=%s", pub.topic)
+                self.logger.exception("publisher error topic=%s", pub.topic)
 
             try:
                 await asyncio.wait_for(asyncio.sleep(pub.every_s), timeout=pub.every_s)
@@ -207,12 +212,12 @@ class Beacon:
                 item = await asyncio.wait_for(self.mqtt_outgoing_queue.get(), timeout=0.1)
 
                 if not isinstance(item, dict):
-                    self._logger.warning("outgoing unexpected item: %r", item)
+                    self.logger.warning("outgoing unexpected item: %r", item)
                     continue
 
                 msg_type = item.get("type")
                 if msg_type != "message":
-                    self._logger.info("outgoing: %r", item)
+                    self.logger.info("outgoing: %r", item)
                     continue
 
                 topic = item.get("topic")
@@ -220,7 +225,7 @@ class Beacon:
 
                 handler = self._mqtt_handlers.get(topic)
                 if not handler:
-                    self._logger.debug("no handler registered for topic=%r", topic)
+                    self.logger.debug("no handler registered for topic=%r", topic)
                     continue
 
                 # create a message object for the handler
@@ -240,11 +245,15 @@ class Beacon:
                 break
 
             except Exception:
-                self._logger.exception("error processing outgoing message")
+                self.logger.exception("error processing outgoing message")
 
-    @staticmethod
-    def _setup_logging() -> None:
-        logging.basicConfig(
-            level=logging.DEBUG,  # default should be INFO
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    # async logging setup then call start on asynclogging object
+    def _setup_logging(self):
+        log_dir = new_run_log_dir(Path("logs"))
+        log_file = log_dir / "beacon.log"
+        self._async_logging = AsyncLogging(
+            LoggingConfig(
+                log_file=log_file,
+            )
         )
+        self._async_logging.start()

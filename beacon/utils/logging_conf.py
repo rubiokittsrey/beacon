@@ -2,10 +2,12 @@ import logging
 import logging.handlers
 import queue
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Self
 
 
+# the asynclogging config dataclass
 @dataclass(slots=True)
 class LoggingConfig:
     log_file: Path
@@ -18,6 +20,13 @@ class LoggingConfig:
 
 
 class AsyncLogging:
+    """
+    Async-safe logging setup using QueueHandler/Listener.
+
+    - Configures the root logger and funnels all log records into a thread-safe queue
+    - Run I/O handlers (file / console) behind a QueueListener
+    """
+
     def __init__(self, config: LoggingConfig):
         self.config = config
         self._queue: queue.Queue[logging.LogRecord] = queue.Queue(-1)
@@ -33,10 +42,8 @@ class AsyncLogging:
             datefmt=self.config.datefmt,
         )
 
-        # Producer: queue handler
         root.addHandler(logging.handlers.QueueHandler(self._queue))
 
-        # Consumers: real I/O handlers
         self.config.log_file.parent.mkdir(parents=True, exist_ok=True)
 
         file_handler = logging.handlers.RotatingFileHandler(
@@ -72,3 +79,17 @@ class AsyncLogging:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.stop()
+
+
+# generate unique log directories per run
+def new_run_log_dir(base: Path) -> Path:
+    ts = datetime.now(UTC).strftime("%Y-%m-%d")
+    run_dir = base / ts
+
+    counter = 1
+    while run_dir.exists():
+        run_dir = base / f"{ts}_{counter}"
+        counter += 1
+
+    run_dir.mkdir(parents=True)
+    return run_dir
