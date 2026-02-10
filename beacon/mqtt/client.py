@@ -92,6 +92,7 @@ class BeaconMQTTClient:
     async def stop(self) -> None:
         # signal client to stop
         self._running = False
+        await self._shutdown()
 
     async def _connect(self) -> None:
 

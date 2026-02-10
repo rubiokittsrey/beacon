@@ -193,7 +193,7 @@ class Beacon:
                 self.logger.exception("publisher error topic=%s", pub.topic)
 
             try:
-                await asyncio.wait_for(asyncio.sleep(pub.every_s), timeout=pub.every_s)
+                await asyncio.sleep(pub.every_s)
             except (asyncio.CancelledError, TimeoutError):
                 break
 
@@ -222,6 +222,7 @@ class Beacon:
 
                 topic = item.get("topic")
                 payload = item.get("payload")
+                timestamp = item.get("timestamp")
 
                 handler = self._mqtt_handlers.get(topic)
                 if not handler:
@@ -233,6 +234,7 @@ class Beacon:
                 msg = {
                     "topic": topic,
                     "payload": payload,
+                    "timestamp": timestamp,
                     "json": lambda p=payload: json.loads(p) if p else None,
                 }
                 handler_task = asyncio.create_task(handler(msg))
