@@ -200,7 +200,6 @@ class BeaconMQTTClient:
                 self._logger.exception("error processing command")
 
     def _handle_subscribe(self, cmd: dict[str, Any]) -> None:
-        """Handle subscribe command."""
         topic = cmd.get("topic")
         if not isinstance(topic, str) or not topic:
             self._logger.debug("subscribe ignored (bad topic): %r", cmd)
@@ -221,7 +220,6 @@ class BeaconMQTTClient:
             self._logger.exception("subscribe failed topic=%s", topic)
 
     def _handle_publish(self, cmd: dict[str, Any]) -> None:
-        """Handle publish command."""
         topic = cmd.get("topic")
         if not isinstance(topic, str) or not topic:
             self._logger.debug("publish ignored (bad topic): %r", cmd)
