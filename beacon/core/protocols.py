@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+# ------------------------------#
+# --- MQTT client protocols --- #
+# ------------------------------#
+
 MQTTCmdType = Literal["subscribe", "publish"]
 MQTT_QOS_MIN = 0
 MQTT_QOS_MID = 1
@@ -28,9 +32,20 @@ class MQTTPublishCmd:
 MQTTCmd = MQTTSubscribeCmd | MQTTPublishCmd
 
 
+# MQTT queue protocol parsing and validation
 class MQTTQueueProtocol:
+    """
+    Validates and converts raw queue messages into typed MQTT commands.
+
+    Accepts dictionary-based input and returns either a `MQTTSubscribeCmd`,
+    `MQTTPublishCmd`, or `None` if the message is invalid.
+    """
+
+    # ensures input is dict-like cmd object
+    # validates cmd type and topic presence
     @staticmethod
     def _validate_cmd_fields(obj: Any) -> tuple[bool, str, MQTTCmdType]:
+        # Ensure the input is a dictionary-like command object
         if not isinstance(obj, dict):
             return (False, "", "subscribe")
 
@@ -45,6 +60,8 @@ class MQTTQueueProtocol:
 
         return (True, cmd_topic, cmd_type)
 
+    # type coercion helper that explicitly rejects bool, accepts ints directly
+    # attempts parse of int from str
     @staticmethod
     def _as_int(value: Any, *, default: int) -> int:
         if value is None:
@@ -67,6 +84,8 @@ class MQTTQueueProtocol:
 
         raise TypeError(err)
 
+    # accepts bool directly
+    # accepts common bool string forms  (true, false, 1, 0, y, n, etc...)
     @staticmethod
     def _as_bool(value: Any, *, default: bool) -> bool:
         if value is None:
@@ -85,6 +104,10 @@ class MQTTQueueProtocol:
         err = f"Expected bool, got {type(value).__name__}"
         raise TypeError(err)
 
+    # MQTT cmd parser
+    # calls on _validate_cmd_fields to validate required cmd fields
+    # validates qos, cmd type, topic
+    # returns either MQTTPublishCmd or MQTTSubscribeCmd
     @staticmethod
     def parse_cmd(obj: Any) -> MQTTCmd | None:
         valid, cmd_topic, cmd_type = MQTTQueueProtocol._validate_cmd_fields(obj)
@@ -96,19 +119,28 @@ class MQTTQueueProtocol:
             return None
 
         if cmd_type == "subscribe":
-            return MQTTSubscribeCmd(type="subscribe", topic=cmd_topic, qos=qos)
+            return MQTTSubscribeCmd(
+                type="subscribe",
+                topic=cmd_topic,
+                qos=qos,
+            )
 
         if cmd_type == "publish":
             payload = obj.get("payload") or ""
             if not isinstance(payload, str):
                 payload = str(payload)
 
-        retain = MQTTQueueProtocol._as_bool(obj.get("retain"), default=False)
+            retain = MQTTQueueProtocol._as_bool(
+                obj.get("retain"),
+                default=False,
+            )
 
-        return MQTTPublishCmd(
-            type="publish",
-            topic=cmd_topic,
-            payload=payload,
-            qos=qos,
-            retain=retain,
-        )
+            return MQTTPublishCmd(
+                type="publish",
+                topic=cmd_topic,
+                payload=payload,
+                qos=qos,
+                retain=retain,
+            )
+
+        return None
