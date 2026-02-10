@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+MQTTCmdType = Literal["subscribe", "publish"]
+MQTT_QOS_MIN = 0
+MQTT_QOS_MID = 1
+MQTT_QOS_MAX = 2
+
 
 @dataclass(frozen=True, slots=True)
 class MQTTSubscribeCmd:
@@ -21,12 +26,25 @@ class MQTTPublishCmd:
 
 
 MQTTCmd = MQTTSubscribeCmd | MQTTPublishCmd
-MQTT_QOS_MIN = 0
-MQTT_QOS_MID = 1
-MQTT_QOS_MAX = 2
 
 
 class MQTTQueueProtocol:
+    @staticmethod
+    def _validate_cmd_fields(obj: Any) -> tuple[bool, str, MQTTCmdType]:
+        if not isinstance(obj, dict):
+            return (False, "", "subscribe")
+
+        cmd_type = obj.get("type")
+        cmd_topic = obj.get("topic")
+
+        if cmd_type not in ("subscribe", "publish"):
+            return (False, "", "subscribe")
+
+        if not isinstance(cmd_topic, str) or not cmd_topic:
+            return (False, "", "subscribe")
+
+        return (True, cmd_topic, cmd_type)
+
     @staticmethod
     def _as_int(value: Any, *, default: int) -> int:
         if value is None:
@@ -42,8 +60,10 @@ class MQTTQueueProtocol:
 
         if isinstance(value, str):
             s = value.strip()
-            if s.isdigit():
+            try:
                 return int(s)
+            except ValueError as e:
+                raise TypeError(err) from e
 
         raise TypeError(err)
 
@@ -67,52 +87,28 @@ class MQTTQueueProtocol:
 
     @staticmethod
     def parse_cmd(obj: Any) -> MQTTCmd | None:
-        if not isinstance(obj, dict):
+        valid, cmd_topic, cmd_type = MQTTQueueProtocol._validate_cmd_fields(obj)
+        if not valid:
             return None
 
-        cmd_type = obj.get("type")
+        qos = MQTTQueueProtocol._as_int(obj.get("qos"), default=0)
+        if not (MQTT_QOS_MIN <= qos <= MQTT_QOS_MAX):
+            return None
 
         if cmd_type == "subscribe":
-            topic = obj.get("topic")
-            if not isinstance(topic, str) or not topic:
-                return None
-
-            try:
-                qos = MQTTQueueProtocol._as_int(obj.get("qos"), default=0)
-            except TypeError:
-                return None
-
-            if qos < 0 or qos > MQTT_QOS_MAX:
-                return None
-
-            return MQTTSubscribeCmd(type="subscribe", topic=topic, qos=qos)
+            return MQTTSubscribeCmd(type="subscribe", topic=cmd_topic, qos=qos)
 
         if cmd_type == "publish":
-            topic = obj.get("topic")
-            if not isinstance(topic, str) or not topic:
-                return None
-
-            payload = obj.get("payload", "")
-            if payload is None:
-                payload = ""
+            payload = obj.get("payload") or ""
             if not isinstance(payload, str):
                 payload = str(payload)
 
-            try:
-                qos = MQTTQueueProtocol._as_int(obj.get("qos"), default=0)
-                retain = MQTTQueueProtocol._as_bool(obj.get("retain"), default=False)
-            except TypeError:
-                return None
+        retain = MQTTQueueProtocol._as_bool(obj.get("retain"), default=False)
 
-            if qos < 0 or qos > MQTT_QOS_MAX:
-                return None
-
-            return MQTTPublishCmd(
-                type="publish",
-                topic=topic,
-                payload=payload,
-                qos=qos,
-                retain=retain,
-            )
-
-        return None
+        return MQTTPublishCmd(
+            type="publish",
+            topic=cmd_topic,
+            payload=payload,
+            qos=qos,
+            retain=retain,
+        )
