@@ -53,7 +53,7 @@ class Beacon:
             self.logger.info("received shutdown signal: %s", sig_name)
 
             # schedule shutdown as a task
-            # adding this task to the tracked tasks (self._tasks) will cause a maximum recursion depth
+            # adding this task to the tracked tasks (self._tasks) will cause a maximum recursion depth error
             asyncio.create_task(self._shutdown())
 
         for sig in (signal.SIGINT, signal.SIGTERM):
