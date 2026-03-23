@@ -1,0 +1,13 @@
+mqtt:
+  host: localhost
+  port: 1883
+  keepalive: 60
+  auth:
+    username: null
+    password: null
+
+logging:
+  level: DEBUG
+  console: true
+  max_bytes: 10485760
+  backup_count: 5

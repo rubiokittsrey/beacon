@@ -10,15 +10,6 @@ from paho.mqtt import enums
 
 
 class BeaconMQTTClient:
-    """
-    Async MQTT client using paho-mqtt.
-
-    Responsibilities:
-    - Maintain a paho mqtt connection (with reconnect)
-    - Accept commands from the app via incoming_queue (subscribe/publish)
-    - Emit events/messages back to the app via outgoing_queue
-    - Remember desired subscriptions and resubscribe after reconnect
-    """
 
     def __init__(
         self,
@@ -46,16 +37,13 @@ class BeaconMQTTClient:
         self.port = port
         self.keepalive = keepalive
 
-        # logging
         self._logger = logging.getLogger(__name__)
 
         # desired subscriptions (topic -> qos) used for reconnect > resubscribe
         self._retained_subs: dict[str, int] = {}
 
-        # shutdown flag
         self._running = False
 
-        # paho client
         self.client = paho_mqtt.Client(
             callback_api_version=enums.CallbackAPIVersion.VERSION2,
             client_id=self.id,
@@ -67,37 +55,26 @@ class BeaconMQTTClient:
         self.client.on_disconnect = self._on_disconnect
         self.client.on_message = self._on_message
 
-    # ----------#
-    # lifecycle #
-    # ----------#
 
     async def start(self) -> None:
-        """Start the MQTT client and begin processing commands."""
         self._logger.info("mqtt client starting id=%s", self.id)
         self._running = True
 
-        # configure auth before connect
         if self.uname and self.pw:
             self.client.username_pw_set(self.uname, self.pw)
 
-        # connect and start network loop thread
         await self._connect()
 
-        # start command processing task
         try:
             await self._process_commands()
         finally:
             await self._shutdown()
 
     async def stop(self) -> None:
-        # signal client to stop
         self._running = False
         await self._shutdown()
 
     async def _connect(self) -> None:
-
-        # runs connect in an executor
-        # to initiate non-blocking connection to mqtt broker
 
         loop = asyncio.get_running_loop()
 
@@ -114,7 +91,6 @@ class BeaconMQTTClient:
             )
 
     async def _shutdown(self) -> None:
-        # shutdown the mqtt client gracefully
 
         self._logger.info("mqtt client shutting down")
         try:
@@ -126,10 +102,6 @@ class BeaconMQTTClient:
             self.client.disconnect()
         except Exception:
             self._logger.exception("error disconnecting mqtt client")
-
-    # ----------------#
-    # paho callbacks  #
-    # ----------------#
 
     def _on_connect(self, client, userdata, flags, reason_code, properties) -> None:  # noqa: ARG002
         if reason_code != 0:
@@ -150,14 +122,12 @@ class BeaconMQTTClient:
         self._logger.warning("disconnected from broker reason_code=%s", reason_code)
 
     def _on_message(self, client, userdata, message: paho_mqtt.MQTTMessage) -> None:  # noqa: ARG002
-        # handles incoming mqtt messages
-        # runs in paho's netowrk thread
+
         try:
             payload = message.payload.decode(errors="replace")
         except Exception:  # noqa: BLE001
             payload = repr(message.payload)
 
-        # message into queue (thread safe)
         try:
             self._outgoing_queue.put_nowait(
                 {
@@ -172,14 +142,9 @@ class BeaconMQTTClient:
                 "outgoing queue full, dropping message from topic=%s", message.topic
             )
 
-    # -------------------#
-    # command processing #
-    # -------------------#
-
     async def _process_commands(self) -> None:
         while self._running:
             try:
-                # wait for command with timeout to allow checking _running flag
                 cmd = await asyncio.wait_for(self._incoming_queue.get(), timeout=0.1)
 
                 if not isinstance(cmd, dict):
@@ -194,7 +159,6 @@ class BeaconMQTTClient:
                     self._logger.debug("unknown cmd: %r", cmd)
 
             except TimeoutError:
-                # no command received, continue loop
                 continue
 
             except Exception:
@@ -210,7 +174,6 @@ class BeaconMQTTClient:
         self._retained_subs[topic] = qos
 
         if not self.client.is_connected():
-            # keep desired subs so connect callback can resubscribe
             self._logger.debug("subscription queued (not connected) topic=%s qos=%s", topic, qos)
             return
 

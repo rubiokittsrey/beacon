@@ -11,14 +11,12 @@ from beacon.core.exceptions import UnsupportedIntervalError
 Handler = Callable[[dict[str, Any]], Awaitable[None]]
 PublisherFn = Callable[[], Awaitable[Any]]
 
-
 # describes a topic subscription + handler binding
 @dataclass(frozen=True)
 class SubscriptionSpec:
     topic: str
     qos: int
     handler: Handler
-
 
 # describes a topic publisher binding (optionally periodic)
 @dataclass(frozen=True)
@@ -28,7 +26,6 @@ class PublisherSpec:
     retain: bool
     every_s: float | None
     fn: PublisherFn
-
 
 # parses `every` parameter of the publish decorator
 # raises an UnsupportedIntervalError if the provider is not a number and n < 0
@@ -48,19 +45,11 @@ def _parse_every(every: float | None) -> float | None:
 
 
 class MQTTBindings:
-    """
-    Small MQTT DSL for declaring bindings on the app side.
-
-    Usage:
-    - @bindings.subscribe("topic") -> registers a handler for inbound messages
-    - @bindings.publisher("topic", every=1.0) -> registers a periodic publisher
-    """
 
     def __init__(self) -> None:
         self._subs: list[SubscriptionSpec] = []
         self._pubs: list[PublisherSpec] = []
 
-    # return snapshots of subscriptions and publishers to keep internal lists private
     @property
     def subscriptions(self) -> list[SubscriptionSpec]:
         return list(self._subs)
@@ -90,7 +79,7 @@ class MQTTBindings:
 
         every_s = _parse_every(every)
 
-        # decorator that records publisher metadata and returns the function unchanged
+        # records publisher metadata and returns the function unchanged
         def decorator(fn: PublisherFn) -> PublisherFn:
             self._pubs.append(
                 PublisherSpec(

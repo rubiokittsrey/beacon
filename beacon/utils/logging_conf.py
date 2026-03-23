@@ -20,12 +20,6 @@ class LoggingConfig:
 
 
 class AsyncLogging:
-    """
-    Async-safe logging setup using QueueHandler/Listener.
-
-    - Configures the root logger and funnels all log records into a thread-safe queue
-    - Run I/O handlers (file / console) behind a QueueListener
-    """
 
     def __init__(self, config: LoggingConfig):
         self.config = config
