@@ -86,6 +86,9 @@ class Beacon:
         # cancel all tasks
         await self._cancel_tasks()
 
+    def _prune_done_tasks(self) -> None:
+        self._tasks = [t for t in self._tasks if not t.done()]
+
     async def _cancel_tasks(self) -> None:
         # cancel tracked tasks
         for task in self._tasks:
@@ -116,7 +119,7 @@ class Beacon:
             # TODO: allow connection attemptt to complete first before registering subscriptions
             self._register_mqtt_subscriptions()
             self._start_mqtt_periodic_publisher()
-            self._start_mqtt_outgoing_message_processoor()
+            self._start_mqtt_outgoing_message_processor()
 
             # keep main process alive until shutdown is requested
             await self._shutdown_event.wait()
@@ -199,7 +202,7 @@ class Beacon:
 
     # starts the mqtt outgoing (from mqtt client) messages processor
     # appends task to tracked tasks
-    def _start_mqtt_outgoing_message_processoor(self) -> None:
+    def _start_mqtt_outgoing_message_processor(self) -> None:
         self._tasks.append(asyncio.create_task(self._process_mqtt_outgoing_messages()))
 
     # processes messages coming from the mqtt client
@@ -237,6 +240,7 @@ class Beacon:
                     "timestamp": timestamp,
                     "json": lambda p=payload: json.loads(p) if p else None,
                 }
+                self._prune_done_tasks()
                 handler_task = asyncio.create_task(handler(msg))
                 self._tasks.append(handler_task)
 
