@@ -1,3 +1,3 @@
 class UnsupportedIntervalError(ValueError):
-    def __init__(self, every: str):
+    def __init__(self, every: float):
         super().__init__(f"Unsupported every='{every}'. Use e.g. 1, 0.5.")

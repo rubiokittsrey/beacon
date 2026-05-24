@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from numbers import Real
 from typing import Any
@@ -8,7 +8,7 @@ from typing import Any
 from beacon.core.exceptions import UnsupportedIntervalError
 
 # note: keep these aliases narrow and explicit for type checkers
-Handler = Callable[[dict[str, Any]], Awaitable[None]]
+Handler = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 PublisherFn = Callable[[], Awaitable[Any]]
 
 # describes a topic subscription + handler binding

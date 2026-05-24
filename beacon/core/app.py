@@ -26,7 +26,7 @@ class Beacon:
         self._mqtt_client: BeaconMQTTClient | None = None
 
         # mqtt dsl bindings + handler routing table
-        self.mqtt = MQTTBindings()
+        self.bindings = MQTTBindings()
         self._mqtt_handlers: dict[str, Handler] = {}
 
         # asyncio queues for clients communication
@@ -58,7 +58,7 @@ class Beacon:
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                loop.add_signal_handler(sig, lambda s=sig: _request_shutdown(s))
+                loop.add_signal_handler(sig, _request_shutdown, sig)
             except NotImplementedError:
                 # windows fallback
                 signal.signal(sig, lambda *_args, sig=sig: _request_shutdown(sig))
@@ -144,14 +144,14 @@ class Beacon:
     # puts subcriptions passed from the mqtt handler binding into the mqtt incoming queue
     # beacon-mqtt-client receives sub commands and subscribes with the paho client
     def _register_mqtt_subscriptions(self) -> None:
-        for sub in self.mqtt.subscriptions:
+        for sub in self.bindings.subscriptions:
             self._mqtt_handlers[sub.topic] = sub.handler
             self.mqtt_incoming_queue.put_nowait(
                 {"type": "subscribe", "topic": sub.topic, "qos": sub.qos}
             )
 
     def _start_mqtt_periodic_publisher(self) -> None:
-        for pub in self.mqtt.publishers:
+        for pub in self.bindings.publishers:
             if pub.every_s is None:
                 continue
             self._tasks.append(asyncio.create_task(self._run_publisher(pub)))
@@ -204,6 +204,10 @@ class Beacon:
                 topic = item.get("topic")
                 payload = item.get("payload")
                 timestamp = item.get("timestamp")
+
+                if not isinstance(topic, str):
+                    self.logger.warning("outgoing message missing topic: %r", item)
+                    continue
 
                 handler = self._mqtt_handlers.get(topic)
                 if not handler:
