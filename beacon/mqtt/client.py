@@ -45,6 +45,7 @@ class BeaconMQTTClient:
         self._retained_subs: dict[str, int] = {}
 
         self._running = False
+        self._shutdown_done = False
 
         # event loop captured in start(); paho callbacks run on the network
         # thread and need it to hand messages back to the loop thread
@@ -65,6 +66,7 @@ class BeaconMQTTClient:
     async def start(self) -> None:
         self._logger.info("mqtt client starting id=%s", self.id)
         self._running = True
+        self._shutdown_done = False
         self._loop = asyncio.get_running_loop()
 
         if self.uname and self.pw:
@@ -92,6 +94,10 @@ class BeaconMQTTClient:
         self._logger.info("mqtt client connecting to %s:%s", self.host, self.port)
 
     async def _shutdown(self) -> None:
+        # stop() and start()'s cleanup can both land here; only run once
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
 
         self._logger.info("mqtt client shutting down")
         try:

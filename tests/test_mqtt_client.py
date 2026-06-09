@@ -119,6 +119,16 @@ class TestHandlePublish:
         )
 
 
+class TestStop:
+    async def test_shutdown_only_runs_once(self, client: BeaconMQTTClient) -> None:
+        # stop() and start()'s cleanup both call _shutdown; the second is a no-op
+        await client.stop()
+        await client.stop()
+
+        client.client.loop_stop.assert_called_once()
+        client.client.disconnect.assert_called_once()
+
+
 class TestProcessCommands:
     async def test_routes_subscribe_and_publish_then_stops(
         self,
