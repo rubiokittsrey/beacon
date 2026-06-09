@@ -31,3 +31,6 @@ dist/
 .eggs/
 
 scripts/
+
+.coverage
+.pytest_cache/
