@@ -29,9 +29,11 @@ class Beacon:
         self.bindings = MQTTBindings()
         self._mqtt_handlers: dict[str, Handler] = {}
 
-        # asyncio queues for clients communication
-        self.mqtt_incoming_queue: asyncio.Queue[Any] = asyncio.Queue()
-        self.mqtt_outgoing_queue: asyncio.Queue[Any] = asyncio.Queue()
+        # asyncio queues for mqtt communication:
+        # commands (subscribe/publish) flow to the client via mqtt_command_queue,
+        # broker messages flow back to handlers via mqtt_message_queue
+        self.mqtt_command_queue: asyncio.Queue[Any] = asyncio.Queue()
+        self.mqtt_message_queue: asyncio.Queue[Any] = asyncio.Queue()
 
         # config
         self._config: BeaconConfig | None = None
@@ -105,7 +107,7 @@ class Beacon:
             # TODO: allow connection attemptt to complete first before registering subscriptions
             self._register_mqtt_subscriptions()
             self._start_mqtt_periodic_publisher()
-            self._start_mqtt_outgoing_message_processor()
+            self._start_mqtt_message_processor()
 
             # keep main process alive until shutdown is requested
             await self._shutdown_event.wait()
@@ -130,8 +132,8 @@ class Beacon:
             id=f"{self.name}-mqtt-client",
             uname=mqtt_cfg.auth.username,
             pw=mqtt_cfg.auth.password,
-            incoming_queue=self.mqtt_incoming_queue,
-            outgoing_queue=self.mqtt_outgoing_queue,
+            command_queue=self.mqtt_command_queue,
+            message_queue=self.mqtt_message_queue,
             host=mqtt_cfg.host,
             port=mqtt_cfg.port,
             keepalive=mqtt_cfg.keepalive,
@@ -141,12 +143,12 @@ class Beacon:
         self._tasks.append(mqtt_task)
 
     # register mqtt subscriptions
-    # puts subcriptions passed from the mqtt handler binding into the mqtt incoming queue
+    # puts subcriptions passed from the mqtt handler binding into the mqtt command queue
     # beacon-mqtt-client receives sub commands and subscribes with the paho client
     def _register_mqtt_subscriptions(self) -> None:
         for sub in self.bindings.subscriptions:
             self._mqtt_handlers[sub.topic] = sub.handler
-            self.mqtt_incoming_queue.put_nowait(
+            self.mqtt_command_queue.put_nowait(
                 {"type": "subscribe", "topic": sub.topic, "qos": sub.qos}
             )
 
@@ -163,7 +165,7 @@ class Beacon:
         while not self._shutdown_event.is_set():
             try:
                 payload_obj = await pub.fn()
-                self.mqtt_incoming_queue.put_nowait(
+                self.mqtt_command_queue.put_nowait(
                     {
                         "type": "publish",
                         "topic": pub.topic,
@@ -182,23 +184,23 @@ class Beacon:
             except (asyncio.CancelledError, TimeoutError):
                 break
 
-    def _start_mqtt_outgoing_message_processor(self) -> None:
-        self._tasks.append(asyncio.create_task(self._process_mqtt_outgoing_messages()))
+    def _start_mqtt_message_processor(self) -> None:
+        self._tasks.append(asyncio.create_task(self._process_mqtt_messages()))
 
-    async def _process_mqtt_outgoing_messages(self) -> None:
+    async def _process_mqtt_messages(self) -> None:
         while not self._shutdown_event.is_set():
             try:
                 # timeout of 0.1s to for non-blocking get
                 # allows checking of shutdown event every 0.1s
-                item = await asyncio.wait_for(self.mqtt_outgoing_queue.get(), timeout=0.1)
+                item = await asyncio.wait_for(self.mqtt_message_queue.get(), timeout=0.1)
 
                 if not isinstance(item, dict):
-                    self.logger.warning("outgoing unexpected item: %r", item)
+                    self.logger.warning("message queue unexpected item: %r", item)
                     continue
 
                 msg_type = item.get("type")
                 if msg_type != "message":
-                    self.logger.info("outgoing: %r", item)
+                    self.logger.info("ignoring non-message item: %r", item)
                     continue
 
                 topic = item.get("topic")
@@ -206,7 +208,7 @@ class Beacon:
                 timestamp = item.get("timestamp")
 
                 if not isinstance(topic, str):
-                    self.logger.warning("outgoing message missing topic: %r", item)
+                    self.logger.warning("message missing topic: %r", item)
                     continue
 
                 handler = self._mqtt_handlers.get(topic)
@@ -233,7 +235,7 @@ class Beacon:
                 break
 
             except Exception:
-                self.logger.exception("error processing outgoing message")
+                self.logger.exception("error processing mqtt message")
 
     def _setup_logging(self) -> None:
         log_cfg = self._config.logging if self._config else None

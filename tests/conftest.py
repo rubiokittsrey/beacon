@@ -7,10 +7,10 @@ import pytest
 
 
 @pytest.fixture()
-def incoming_queue() -> asyncio.Queue[Any]:
+def command_queue() -> asyncio.Queue[Any]:
     return asyncio.Queue()
 
 
 @pytest.fixture()
-def outgoing_queue() -> asyncio.Queue[Any]:
+def message_queue() -> asyncio.Queue[Any]:
     return asyncio.Queue()

@@ -11,14 +11,14 @@ from beacon.mqtt.client import BeaconMQTTClient
 
 @pytest.fixture()
 def client(
-    incoming_queue: asyncio.Queue[Any],
-    outgoing_queue: asyncio.Queue[Any],
+    command_queue: asyncio.Queue[Any],
+    message_queue: asyncio.Queue[Any],
 ) -> BeaconMQTTClient:
     c = BeaconMQTTClient(
         pw=None,
         uname=None,
-        incoming_queue=incoming_queue,
-        outgoing_queue=outgoing_queue,
+        command_queue=command_queue,
+        message_queue=message_queue,
         host="localhost",
         port=1883,
         keepalive=60,
@@ -35,23 +35,46 @@ class _FakeMessage:
 
 
 class TestOnMessage:
-    def test_decoded_message_is_enqueued(
-        self, client: BeaconMQTTClient, outgoing_queue: asyncio.Queue[Any]
+    async def test_decoded_message_is_enqueued(
+        self, client: BeaconMQTTClient, message_queue: asyncio.Queue[Any]
     ) -> None:
+        client._loop = asyncio.get_running_loop()
         client._on_message(None, None, _FakeMessage("sensors/temp", b'{"v": 1}'))
 
-        item = outgoing_queue.get_nowait()
+        # the put is scheduled on the loop via call_soon_threadsafe
+        item = await asyncio.wait_for(message_queue.get(), timeout=1.0)
         assert item["type"] == "message"
         assert item["topic"] == "sensors/temp"
         assert item["payload"] == '{"v": 1}'
         assert isinstance(item["timestamp"], float)
 
-    def test_invalid_utf8_is_replaced_not_raised(
-        self, client: BeaconMQTTClient, outgoing_queue: asyncio.Queue[Any]
+    async def test_invalid_utf8_is_replaced_not_raised(
+        self, client: BeaconMQTTClient, message_queue: asyncio.Queue[Any]
     ) -> None:
+        client._loop = asyncio.get_running_loop()
         client._on_message(None, None, _FakeMessage("topic", b"\xff\xfe"))
-        item = outgoing_queue.get_nowait()
+        item = await asyncio.wait_for(message_queue.get(), timeout=1.0)
         assert isinstance(item["payload"], str)
+
+    def test_dropped_without_event_loop(
+        self, client: BeaconMQTTClient, message_queue: asyncio.Queue[Any]
+    ) -> None:
+        # before start() captures the loop, messages are dropped, not crashed on
+        client._on_message(None, None, _FakeMessage("topic", b"x"))
+        assert message_queue.empty()
+
+
+class TestConnect:
+    def test_uses_async_connect_so_paho_retries_initial_connection(
+        self, client: BeaconMQTTClient
+    ) -> None:
+        client._connect()
+
+        client.client.reconnect_delay_set.assert_called_once_with(min_delay=1, max_delay=60)
+        client.client.connect_async.assert_called_once_with("localhost", 1883, 60)
+        client.client.loop_start.assert_called_once()
+        # the blocking variant would raise on an unreachable broker at startup
+        client.client.connect.assert_not_called()
 
 
 class TestHandleSubscribe:
@@ -100,18 +123,18 @@ class TestProcessCommands:
     async def test_routes_subscribe_and_publish_then_stops(
         self,
         client: BeaconMQTTClient,
-        incoming_queue: asyncio.Queue[Any],
+        command_queue: asyncio.Queue[Any],
     ) -> None:
         client.client.is_connected.return_value = True
         client._running = True
 
-        incoming_queue.put_nowait({"type": "subscribe", "topic": "a/b", "qos": 0})
-        incoming_queue.put_nowait(
+        command_queue.put_nowait({"type": "subscribe", "topic": "a/b", "qos": 0})
+        command_queue.put_nowait(
             {"type": "publish", "topic": "a/b", "payload": "p"}
         )
 
         async def stop_soon() -> None:
-            while incoming_queue.qsize() > 0:
+            while command_queue.qsize() > 0:
                 await asyncio.sleep(0.01)
             await asyncio.sleep(0.05)
             client._running = False

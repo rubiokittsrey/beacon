@@ -26,7 +26,7 @@ class TestRegisterSubscriptions:
 
         assert app._mqtt_handlers["sensors/temp"] is handler
 
-        cmd = app.mqtt_incoming_queue.get_nowait()
+        cmd = app.mqtt_command_queue.get_nowait()
         assert cmd == {"type": "subscribe", "topic": "sensors/temp", "qos": 1}
 
 
@@ -66,7 +66,7 @@ class TestOutgoingMessageProcessor:
             received.append(msg)
 
         app._mqtt_handlers["a/b"] = handler
-        app.mqtt_outgoing_queue.put_nowait(
+        app.mqtt_message_queue.put_nowait(
             {
                 "type": "message",
                 "topic": "a/b",
@@ -75,7 +75,7 @@ class TestOutgoingMessageProcessor:
             }
         )
 
-        processor = asyncio.create_task(app._process_mqtt_outgoing_messages())
+        processor = asyncio.create_task(app._process_mqtt_messages())
 
         # wait until the handler has run
         for _ in range(100):
@@ -92,11 +92,11 @@ class TestOutgoingMessageProcessor:
         assert msg["json"]() == {"v": 1}
 
     async def test_message_without_handler_is_ignored(self, app: Beacon) -> None:
-        app.mqtt_outgoing_queue.put_nowait(
+        app.mqtt_message_queue.put_nowait(
             {"type": "message", "topic": "no/handler", "payload": "x"}
         )
 
-        processor = asyncio.create_task(app._process_mqtt_outgoing_messages())
+        processor = asyncio.create_task(app._process_mqtt_messages())
         await asyncio.sleep(0.05)
         app._shutdown_event.set()
         await asyncio.gather(processor, return_exceptions=True)
@@ -106,7 +106,7 @@ class TestOutgoingMessageProcessor:
 
 
 class TestRunPublisher:
-    async def test_publishes_payload_to_incoming_queue(self, app: Beacon) -> None:
+    async def test_publishes_payload_to_command_queue(self, app: Beacon) -> None:
         async def make_payload() -> dict[str, Any]:
             return {"status": "online"}
 
@@ -120,7 +120,7 @@ class TestRunPublisher:
 
         task = asyncio.create_task(app._run_publisher(spec))
 
-        cmd = await asyncio.wait_for(app.mqtt_incoming_queue.get(), timeout=1.0)
+        cmd = await asyncio.wait_for(app.mqtt_command_queue.get(), timeout=1.0)
 
         app._shutdown_event.set()
         task.cancel()

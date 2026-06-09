@@ -17,8 +17,8 @@ class BeaconMQTTClient:
         pw: str | None,
         uname: str | None,
         id: str = "beacon-mqtt-client",
-        outgoing_queue: asyncio.Queue[Any],
-        incoming_queue: asyncio.Queue[Any],
+        command_queue: asyncio.Queue[Any],
+        message_queue: asyncio.Queue[Any],
         host: str,
         port: int,
         keepalive: int,
@@ -28,9 +28,11 @@ class BeaconMQTTClient:
         self.uname = uname
         self.pw = pw
 
-        # async queues for communication
-        self._outgoing_queue = outgoing_queue
-        self._incoming_queue = incoming_queue
+        # async queues for communication:
+        # commands (subscribe/publish) flow in from the app,
+        # broker messages flow out to the app's handlers
+        self._command_queue = command_queue
+        self._message_queue = message_queue
 
         # connection config
         self.host = host
@@ -43,6 +45,10 @@ class BeaconMQTTClient:
         self._retained_subs: dict[str, int] = {}
 
         self._running = False
+
+        # event loop captured in start(); paho callbacks run on the network
+        # thread and need it to hand messages back to the loop thread
+        self._loop: asyncio.AbstractEventLoop | None = None
 
         self.client = paho_mqtt.Client(
             callback_api_version=enums.CallbackAPIVersion.VERSION2,
@@ -59,11 +65,12 @@ class BeaconMQTTClient:
     async def start(self) -> None:
         self._logger.info("mqtt client starting id=%s", self.id)
         self._running = True
+        self._loop = asyncio.get_running_loop()
 
         if self.uname and self.pw:
             self.client.username_pw_set(self.uname, self.pw)
 
-        await self._connect()
+        self._connect()
 
         try:
             await self._process_commands()
@@ -74,21 +81,15 @@ class BeaconMQTTClient:
         self._running = False
         await self._shutdown()
 
-    async def _connect(self) -> None:
-
-        loop = asyncio.get_running_loop()
-
-        try:
-            self.client.reconnect_delay_set(min_delay=1, max_delay=60)
-            await loop.run_in_executor(
-                None, lambda: self.client.connect(self.host, self.port, self.keepalive)
-            )
-            self.client.loop_start()
-            self._logger.info("mqtt client connected to %s:%s", self.host, self.port)
-        except Exception:
-            self._logger.exception(
-                "could not connect to broker host=%s port=%s", self.host, self.port
-            )
+    def _connect(self) -> None:
+        # connect_async + loop_start hands the initial connection to paho's
+        # network thread, which retries it with this backoff (loop_start runs
+        # loop_forever with retry_first_connection=True) - so a broker that is
+        # down at startup is picked up once reachable; _on_connect logs success
+        self.client.reconnect_delay_set(min_delay=1, max_delay=60)
+        self.client.connect_async(self.host, self.port, self.keepalive)
+        self.client.loop_start()
+        self._logger.info("mqtt client connecting to %s:%s", self.host, self.port)
 
     async def _shutdown(self) -> None:
 
@@ -128,24 +129,31 @@ class BeaconMQTTClient:
         except Exception:  # noqa: BLE001
             payload = repr(message.payload)
 
+        item = {
+            "type": "message",
+            "topic": message.topic,
+            "payload": payload,
+            "timestamp": time.time(),
+        }
+
+        # this callback runs on paho's network thread and asyncio queues are
+        # not thread-safe, so the put must be scheduled on the loop thread
+        if self._loop is None:
+            self._logger.warning("no event loop, dropping message from topic=%s", message.topic)
+            return
+
         try:
-            self._outgoing_queue.put_nowait(
-                {
-                    "type": "message",
-                    "topic": message.topic,
-                    "payload": payload,
-                    "timestamp": time.time(),
-                }
-            )
-        except asyncio.QueueFull:
+            self._loop.call_soon_threadsafe(self._message_queue.put_nowait, item)
+        except RuntimeError:
+            # loop already closed mid-shutdown
             self._logger.warning(
-                "outgoing queue full, dropping message from topic=%s", message.topic
+                "event loop closed, dropping message from topic=%s", message.topic
             )
 
     async def _process_commands(self) -> None:
         while self._running:
             try:
-                cmd = await asyncio.wait_for(self._incoming_queue.get(), timeout=0.1)
+                cmd = await asyncio.wait_for(self._command_queue.get(), timeout=0.1)
 
                 if not isinstance(cmd, dict):
                     continue
