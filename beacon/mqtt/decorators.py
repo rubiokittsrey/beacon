@@ -3,22 +3,32 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from numbers import Real
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from beacon.core.exceptions import UnsupportedIntervalError
+from beacon.mqtt.messages import Message
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 # note: keep these aliases narrow and explicit for type checkers
-Handler = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
+Handler = Callable[[Message[Any]], Coroutine[Any, Any, None]]
 PublisherFn = Callable[[], Awaitable[Any]]
 
+
 # describes a topic subscription + handler binding
+# `topic` is an mqtt topic filter and may contain wildcards (+, #)
+# `model` (optional pydantic model) validates inbound payloads before dispatch
 @dataclass(frozen=True)
 class SubscriptionSpec:
     topic: str
     qos: int
     handler: Handler
+    model: type[BaseModel] | None = None
+
 
 # describes a topic publisher binding (optionally periodic)
+# `model` (optional pydantic model) validates + serializes the return value
 @dataclass(frozen=True)
 class PublisherSpec:
     topic: str
@@ -26,6 +36,8 @@ class PublisherSpec:
     retain: bool
     every_s: float | None
     fn: PublisherFn
+    model: type[BaseModel] | None = None
+
 
 # parses `every` parameter of the publish decorator
 # raises an UnsupportedIntervalError if the provider is not a number and n < 0
@@ -45,7 +57,6 @@ def _parse_every(every: float | None) -> float | None:
 
 
 class MQTTBindings:
-
     def __init__(self) -> None:
         self._subs: list[SubscriptionSpec] = []
         self._pubs: list[PublisherSpec] = []
@@ -58,11 +69,22 @@ class MQTTBindings:
     def publishers(self) -> list[PublisherSpec]:
         return list(self._pubs)
 
-    def subscribe(self, topic: str, *, qos: int = 0) -> Callable[[Handler], Handler]:
-        """@bindings.subscribe("topic") -> registers a handler for inbound messages"""
+    def subscribe(
+        self,
+        topic: str,
+        *,
+        qos: int = 0,
+        model: type[BaseModel] | None = None,
+    ) -> Callable[[Handler], Handler]:
+        """@bindings.subscribe("topic") -> registers a handler for inbound messages
+
+        `topic` may contain mqtt wildcards (+, #). When `model` is given,
+        inbound payloads are validated against it and exposed as `msg.data`;
+        payloads that fail validation are logged and dropped.
+        """
 
         def decorator(fn: Handler) -> Handler:
-            self._subs.append(SubscriptionSpec(topic=topic, qos=qos, handler=fn))
+            self._subs.append(SubscriptionSpec(topic=topic, qos=qos, handler=fn, model=model))
             return fn
 
         return decorator
@@ -74,8 +96,14 @@ class MQTTBindings:
         qos: int = 0,
         retain: bool = False,
         every: float | None = None,
+        model: type[BaseModel] | None = None,
     ) -> Callable[[PublisherFn], PublisherFn]:
-        """@bindings.publisher("topic", every=1.0) -> registers a periodic publisher"""
+        """@bindings.publisher("topic", every=1.0) -> registers a periodic publisher
+
+        When `model` is given, the return value is validated against it and
+        serialized with `model_dump_json()`; values that fail validation are
+        logged and not published.
+        """
 
         every_s = _parse_every(every)
 
@@ -88,6 +116,7 @@ class MQTTBindings:
                     retain=retain,
                     every_s=every_s,
                     fn=fn,
+                    model=model,
                 )
             )
             return fn

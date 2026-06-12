@@ -4,7 +4,8 @@ An async Python framework for building MQTT-connected services. Beacon handles t
 
 ## Features
 
-- **Decorator DSL** — bind handlers to topics with `@app.bindings.subscribe(...)` and register periodic publishers with `@app.bindings.publisher(..., every=...)`
+- **Decorator DSL** — bind handlers to topic filters (wildcards `+`/`#` supported) with `@app.bindings.subscribe(...)` and register periodic publishers with `@app.bindings.publisher(..., every=...)`
+- **Typed payloads** — declare a Pydantic model per binding with `model=`; inbound payloads are validated before your handler runs (invalid ones are logged and dropped), outbound ones are serialized with `model_dump_json()`
 - **Resilient MQTT client** — built on paho-mqtt with background connection retry and backoff; starting before the broker is up is fine
 - **YAML configuration** — Pydantic-validated, with sane defaults when the file is missing
 - **Async logging** — rotating file logs in a fresh per-run directory under `logs/`, plus optional console output
@@ -46,17 +47,30 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import BaseModel
+
 from beacon.core.app import Beacon
+from beacon.mqtt import Message
 
 app = Beacon(name="my-device")
 
 
-# handle inbound messages on a topic
-@app.bindings.subscribe("sensors/temperature", qos=1)
-async def on_temperature(msg: dict[str, Any]) -> None:
-    # msg keys: topic, payload (str), timestamp (float), json (callable)
-    reading = msg["json"]()
-    print(f"temperature: {reading}")
+class TempReading(BaseModel):
+    sensor_id: str
+    celsius: float
+
+
+# typed subscription: payloads are validated against the model before your
+# handler runs; invalid ones are logged and dropped. Wildcards route.
+@app.bindings.subscribe("sensors/+/temperature", qos=1, model=TempReading)
+async def on_temperature(msg: Message[TempReading]) -> None:
+    print(f"{msg.data.sensor_id}: {msg.data.celsius}C (topic={msg.topic})")
+
+
+# untyped subscription: msg.data is None, use msg.json() or msg.payload
+@app.bindings.subscribe("devices/announce")
+async def on_announce(msg: Message[None]) -> None:
+    print(f"announce: {msg.json()}")
 
 
 # publish a JSON payload every 5 seconds
@@ -75,6 +89,8 @@ if __name__ == "__main__":
 
 `start()` loads the config, sets up logging and signal handlers, connects to the broker, registers subscriptions, and runs periodic publishers until shutdown is requested. Ctrl-C exits cleanly.
 
+Publishers can also declare `model=` to validate and serialize their return value via `model_dump_json()` — which handles `datetime`, enums, and nested models. A bare `BaseModel` return is serialized the same way even without a declared model.
+
 ## How it works
 
 Two asyncio queues connect the app to the MQTT client, which runs alongside paho's network thread:
@@ -82,7 +98,7 @@ Two asyncio queues connect the app to the MQTT client, which runs alongside paho
 - `app.mqtt_command_queue` — subscribe/publish commands flowing **to** the client
 - `app.mqtt_message_queue` — broker messages flowing **back** to your handlers
 
-Each inbound message is dispatched to its topic's handler as its own asyncio task, so a slow handler never blocks the message loop.
+Inbound messages are matched against every registered topic filter (so `sensors/+/temperature` receives `sensors/kitchen/temperature`, and overlapping filters each fire). Each handler runs as its own asyncio task, so a slow handler never blocks the message loop. Payloads that fail model validation never reach a handler — they are logged at WARNING and dropped.
 
 ## Project layout
 
@@ -94,7 +110,8 @@ beacon/
 │   └── exceptions.py   # framework exceptions
 ├── mqtt/
 │   ├── client.py       # paho-mqtt wrapper with retry/backoff
-│   └── decorators.py   # subscribe/publisher binding DSL
+│   ├── decorators.py   # subscribe/publisher binding DSL
+│   └── messages.py     # Message[T] delivered to handlers
 └── utils/
     └── logging_conf.py # async logging with per-run log dirs
 ```

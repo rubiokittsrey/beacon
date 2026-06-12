@@ -173,6 +173,7 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
     "INP001",  # Implicit namespace package (tests need no __init__.py)
     "SLF001",  # Private member access (tests exercise internals)
     "S106",    # Hardcoded password (test fixtures use fake credentials)
+    "TC001",   # Move first-party import to type-checking block (noise in tests)
     "TC003",   # Move stdlib import to type-checking block (noise in tests)
     "ASYNC110",# Polling loops are intentional in async tests
 ]

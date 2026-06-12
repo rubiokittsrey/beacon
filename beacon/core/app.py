@@ -7,8 +7,11 @@ import signal
 from pathlib import Path
 from typing import Any
 
+from paho.mqtt.client import topic_matches_sub
+from pydantic import BaseModel, ValidationError
+
 from beacon.core.config import BeaconConfig, load_config
-from beacon.mqtt import BeaconMQTTClient, Handler, MQTTBindings, PublisherSpec
+from beacon.mqtt import BeaconMQTTClient, Message, MQTTBindings, PublisherSpec, SubscriptionSpec
 from beacon.utils.logging_conf import AsyncLogging, LoggingConfig, new_run_log_dir
 
 
@@ -25,9 +28,9 @@ class Beacon:
         # app clients
         self._mqtt_client: BeaconMQTTClient | None = None
 
-        # mqtt dsl bindings + handler routing table
+        # mqtt dsl bindings + subscription routing table (topic filter -> spec)
         self.bindings = MQTTBindings()
-        self._mqtt_handlers: dict[str, Handler] = {}
+        self._mqtt_subscriptions: dict[str, SubscriptionSpec] = {}
 
         # asyncio queues for mqtt communication:
         # commands (subscribe/publish) flow to the client via mqtt_command_queue,
@@ -147,7 +150,7 @@ class Beacon:
     # beacon-mqtt-client receives sub commands and subscribes with the paho client
     def _register_mqtt_subscriptions(self) -> None:
         for sub in self.bindings.subscriptions:
-            self._mqtt_handlers[sub.topic] = sub.handler
+            self._mqtt_subscriptions[sub.topic] = sub
             self.mqtt_command_queue.put_nowait(
                 {"type": "subscribe", "topic": sub.topic, "qos": sub.qos}
             )
@@ -169,7 +172,7 @@ class Beacon:
                     {
                         "type": "publish",
                         "topic": pub.topic,
-                        "payload": json.dumps(payload_obj),
+                        "payload": self._encode_payload(pub, payload_obj),
                         "qos": pub.qos,
                         "retain": pub.retain,
                     }
@@ -183,6 +186,21 @@ class Beacon:
                 await asyncio.sleep(pub.every_s)
             except (asyncio.CancelledError, TimeoutError):
                 break
+
+    # serializes a publisher's return value
+    # model declared -> validate + model_dump_json (a ValidationError propagates
+    # to _run_publisher, which logs it and skips the publish);
+    # bare BaseModel return -> model_dump_json; anything else -> json.dumps
+    def _encode_payload(self, pub: PublisherSpec, payload_obj: Any) -> str:
+        if pub.model is not None:
+            if not isinstance(payload_obj, pub.model):
+                payload_obj = pub.model.model_validate(payload_obj)
+            return payload_obj.model_dump_json()
+
+        if isinstance(payload_obj, BaseModel):
+            return payload_obj.model_dump_json()
+
+        return json.dumps(payload_obj)
 
     def _start_mqtt_message_processor(self) -> None:
         self._tasks.append(asyncio.create_task(self._process_mqtt_messages()))
@@ -211,22 +229,26 @@ class Beacon:
                     self.logger.warning("message missing topic: %r", item)
                     continue
 
-                handler = self._mqtt_handlers.get(topic)
-                if not handler:
+                # match against subscription filters so wildcard topics (+, #)
+                # route; overlapping filters each get the message
+                matched = [
+                    spec
+                    for filt, spec in self._mqtt_subscriptions.items()
+                    if topic_matches_sub(filt, topic)
+                ]
+                if not matched:
                     self.logger.debug("no handler registered for topic=%r", topic)
                     continue
 
-                # create a message object for the handler
-                # and then run the handler as a task (added to tracked tasks)
-                msg = {
-                    "topic": topic,
-                    "payload": payload,
-                    "timestamp": timestamp,
-                    "json": lambda p=payload: json.loads(p) if p else None,
-                }
+                # build a message per matched spec (validating against its
+                # model) and run each handler as a task (added to tracked tasks)
                 self._prune_done_tasks()
-                handler_task = asyncio.create_task(handler(msg))
-                self._tasks.append(handler_task)
+                for spec in matched:
+                    msg = self._build_message(spec, topic, payload, timestamp)
+                    if msg is None:
+                        continue
+                    handler_task = asyncio.create_task(spec.handler(msg))
+                    self._tasks.append(handler_task)
 
             except TimeoutError:
                 continue
@@ -236,6 +258,31 @@ class Beacon:
 
             except Exception:
                 self.logger.exception("error processing mqtt message")
+
+    # builds the Message handed to a subscription handler, validating the
+    # payload against the subscription's model when one is declared
+    # policy: payloads failing validation are logged and dropped, never raised
+    def _build_message(
+        self,
+        spec: SubscriptionSpec,
+        topic: str,
+        payload: str | None,
+        timestamp: float | None,
+    ) -> Message[Any] | None:
+        data: Any = None
+        if spec.model is not None:
+            try:
+                data = spec.model.model_validate_json(payload or "")
+            except ValidationError as e:
+                self.logger.warning(
+                    "dropping message topic=%r: failed %s validation: %s",
+                    topic,
+                    spec.model.__name__,
+                    e,
+                )
+                return None
+
+        return Message(topic=topic, payload=payload, timestamp=timestamp, data=data)
 
     def _setup_logging(self) -> None:
         log_cfg = self._config.logging if self._config else None
