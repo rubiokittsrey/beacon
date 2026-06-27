@@ -3,12 +3,18 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from beacon.core.exceptions import UnsupportedIntervalError
 from beacon.mqtt.decorators import MQTTBindings, PublisherSpec, SubscriptionSpec
+from beacon.mqtt.messages import Message
 
 
-async def _noop_handler(_msg: dict[str, Any]) -> None:
+class _Payload(BaseModel):
+    value: float
+
+
+async def _noop_handler(_msg: Message[Any]) -> None:
     return None
 
 
@@ -35,6 +41,16 @@ class TestSubscribe:
         bindings.subscribe("a/b")(_noop_handler)
         assert bindings.subscriptions[0].qos == 0
 
+    def test_default_model_is_none(self) -> None:
+        bindings = MQTTBindings()
+        bindings.subscribe("a/b")(_noop_handler)
+        assert bindings.subscriptions[0].model is None
+
+    def test_model_is_stored_on_spec(self) -> None:
+        bindings = MQTTBindings()
+        bindings.subscribe("a/b", model=_Payload)(_noop_handler)
+        assert bindings.subscriptions[0].model is _Payload
+
     def test_multiple_subscriptions_preserve_order(self) -> None:
         bindings = MQTTBindings()
         bindings.subscribe("first")(_noop_handler)
@@ -46,9 +62,9 @@ class TestPublisher:
     def test_registers_publisher_spec(self) -> None:
         bindings = MQTTBindings()
 
-        returned = bindings.publisher(
-            "devices/heartbeat", qos=2, retain=True, every=5.0
-        )(_noop_publisher)
+        returned = bindings.publisher("devices/heartbeat", qos=2, retain=True, every=5.0)(
+            _noop_publisher
+        )
 
         assert returned is _noop_publisher
         assert len(bindings.publishers) == 1
@@ -67,6 +83,12 @@ class TestPublisher:
         assert spec.qos == 0
         assert spec.retain is False
         assert spec.every_s is None
+        assert spec.model is None
+
+    def test_model_is_stored_on_spec(self) -> None:
+        bindings = MQTTBindings()
+        bindings.publisher("topic", model=_Payload)(_noop_publisher)
+        assert bindings.publishers[0].model is _Payload
 
 
 class TestParseEvery:
