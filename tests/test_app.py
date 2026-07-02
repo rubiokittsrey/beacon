@@ -48,10 +48,31 @@ class TestRegisterSubscriptions:
         app.bindings.subscribe("sensors/temp", qos=1)(handler)
         app._register_mqtt_subscriptions()
 
-        assert app._mqtt_subscriptions["sensors/temp"].handler is handler
+        assert app._mqtt_subscriptions["sensors/temp"][0].handler is handler
 
         cmd = app.mqtt_command_queue.get_nowait()
         assert cmd == {"type": "subscribe", "topic": "sensors/temp", "qos": 1}
+
+    def test_same_filter_keeps_all_handlers_and_subscribes_once_at_max_qos(
+        self, app: Beacon
+    ) -> None:
+        async def first(_msg: Message[Any]) -> None:
+            return None
+
+        async def second(_msg: Message[Any]) -> None:
+            return None
+
+        app.bindings.subscribe("sensors/temp", qos=1)(first)
+        app.bindings.subscribe("sensors/temp", qos=0)(second)
+        app._register_mqtt_subscriptions()
+
+        handlers = [spec.handler for spec in app._mqtt_subscriptions["sensors/temp"]]
+        assert handlers == [first, second]
+
+        # a single subscribe command, at the max qos among the bindings
+        cmd = app.mqtt_command_queue.get_nowait()
+        assert cmd == {"type": "subscribe", "topic": "sensors/temp", "qos": 1}
+        assert app.mqtt_command_queue.empty()
 
 
 class TestPruneDoneTasks:
@@ -89,7 +110,7 @@ class TestOutgoingMessageProcessor:
         async def handler(msg: Message[Any]) -> None:
             received.append(msg)
 
-        app._mqtt_subscriptions["a/b"] = SubscriptionSpec(topic="a/b", qos=0, handler=handler)
+        app._mqtt_subscriptions["a/b"] = [SubscriptionSpec(topic="a/b", qos=0, handler=handler)]
         app.mqtt_message_queue.put_nowait(_message_item("a/b", json.dumps({"v": 1})))
 
         await _run_processor_until(app, received)
@@ -107,9 +128,9 @@ class TestOutgoingMessageProcessor:
         async def handler(msg: Message[Any]) -> None:
             received.append(msg)
 
-        app._mqtt_subscriptions["sensors/+/temp"] = SubscriptionSpec(
-            topic="sensors/+/temp", qos=0, handler=handler
-        )
+        app._mqtt_subscriptions["sensors/+/temp"] = [
+            SubscriptionSpec(topic="sensors/+/temp", qos=0, handler=handler)
+        ]
         app.mqtt_message_queue.put_nowait(_message_item("sensors/kitchen/temp", "21.5"))
 
         await _run_processor_until(app, received)
@@ -126,12 +147,12 @@ class TestOutgoingMessageProcessor:
 
             return handler
 
-        app._mqtt_subscriptions["sensors/+/temp"] = SubscriptionSpec(
-            topic="sensors/+/temp", qos=0, handler=make_handler("wildcard")
-        )
-        app._mqtt_subscriptions["sensors/kitchen/#"] = SubscriptionSpec(
-            topic="sensors/kitchen/#", qos=0, handler=make_handler("hash")
-        )
+        app._mqtt_subscriptions["sensors/+/temp"] = [
+            SubscriptionSpec(topic="sensors/+/temp", qos=0, handler=make_handler("wildcard"))
+        ]
+        app._mqtt_subscriptions["sensors/kitchen/#"] = [
+            SubscriptionSpec(topic="sensors/kitchen/#", qos=0, handler=make_handler("hash"))
+        ]
         app.mqtt_message_queue.put_nowait(_message_item("sensors/kitchen/temp", "{}"))
 
         processor = asyncio.create_task(app._process_mqtt_messages())
@@ -143,6 +164,32 @@ class TestOutgoingMessageProcessor:
         await asyncio.gather(processor, return_exceptions=True)
 
         assert sorted(hits) == ["hash", "wildcard"]
+
+    async def test_multiple_handlers_on_same_filter_each_receive_the_message(
+        self, app: Beacon
+    ) -> None:
+        hits: list[str] = []
+
+        def make_handler(name: str):
+            async def handler(_msg: Message[Any]) -> None:
+                hits.append(name)
+
+            return handler
+
+        app.bindings.subscribe("sensors/temp")(make_handler("first"))
+        app.bindings.subscribe("sensors/temp")(make_handler("second"))
+        app._register_mqtt_subscriptions()
+        app.mqtt_message_queue.put_nowait(_message_item("sensors/temp", "{}"))
+
+        processor = asyncio.create_task(app._process_mqtt_messages())
+        for _ in range(100):
+            if len(hits) == 2:
+                break
+            await asyncio.sleep(0.01)
+        app._shutdown_event.set()
+        await asyncio.gather(processor, return_exceptions=True)
+
+        assert sorted(hits) == ["first", "second"]
 
     async def test_message_without_handler_is_ignored(self, app: Beacon) -> None:
         app.mqtt_message_queue.put_nowait(
@@ -165,9 +212,9 @@ class TestInboundValidation:
         async def handler(msg: Message[Reading]) -> None:
             received.append(msg)
 
-        app._mqtt_subscriptions["sensors/temp"] = SubscriptionSpec(
-            topic="sensors/temp", qos=0, handler=handler, model=Reading
-        )
+        app._mqtt_subscriptions["sensors/temp"] = [
+            SubscriptionSpec(topic="sensors/temp", qos=0, handler=handler, model=Reading)
+        ]
         app.mqtt_message_queue.put_nowait(
             _message_item("sensors/temp", json.dumps({"sensor_id": "s1", "value": 21.5}))
         )
@@ -183,9 +230,9 @@ class TestInboundValidation:
         async def handler(msg: Message[Reading]) -> None:
             received.append(msg)
 
-        app._mqtt_subscriptions["sensors/temp"] = SubscriptionSpec(
-            topic="sensors/temp", qos=0, handler=handler, model=Reading
-        )
+        app._mqtt_subscriptions["sensors/temp"] = [
+            SubscriptionSpec(topic="sensors/temp", qos=0, handler=handler, model=Reading)
+        ]
         # malformed json, wrong shape, then a valid payload; only the valid
         # one may reach the handler, proving drop without killing the loop
         app.mqtt_message_queue.put_nowait(_message_item("sensors/temp", "not-json"))

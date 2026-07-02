@@ -98,7 +98,7 @@ Two asyncio queues connect the app to the MQTT client, which runs alongside paho
 - `app.mqtt_command_queue` — subscribe/publish commands flowing **to** the client
 - `app.mqtt_message_queue` — broker messages flowing **back** to your handlers
 
-Inbound messages are matched against every registered topic filter (so `sensors/+/temperature` receives `sensors/kitchen/temperature`, and overlapping filters each fire). Each handler runs as its own asyncio task, so a slow handler never blocks the message loop. Payloads that fail model validation never reach a handler — they are logged at WARNING and dropped.
+Inbound messages are matched against every registered topic filter (so `sensors/+/temperature` receives `sensors/kitchen/temperature`, and overlapping filters each fire). Multiple handlers may bind to the same filter — each receives the message, and the broker subscription uses the highest qos among them. Each handler runs as its own asyncio task, so a slow handler never blocks the message loop. Payloads that fail model validation never reach a handler — they are logged at WARNING and dropped.
 
 ## Project layout
 

@@ -28,9 +28,10 @@ class Beacon:
         # app clients
         self._mqtt_client: BeaconMQTTClient | None = None
 
-        # mqtt dsl bindings + subscription routing table (topic filter -> spec)
+        # mqtt dsl bindings + subscription routing table (topic filter -> specs;
+        # a list so multiple handlers can bind to the same filter)
         self.bindings = MQTTBindings()
-        self._mqtt_subscriptions: dict[str, SubscriptionSpec] = {}
+        self._mqtt_subscriptions: dict[str, list[SubscriptionSpec]] = {}
 
         # asyncio queues for mqtt communication:
         # commands (subscribe/publish) flow to the client via mqtt_command_queue,
@@ -150,10 +151,13 @@ class Beacon:
     # beacon-mqtt-client receives sub commands and subscribes with the paho client
     def _register_mqtt_subscriptions(self) -> None:
         for sub in self.bindings.subscriptions:
-            self._mqtt_subscriptions[sub.topic] = sub
-            self.mqtt_command_queue.put_nowait(
-                {"type": "subscribe", "topic": sub.topic, "qos": sub.qos}
-            )
+            self._mqtt_subscriptions.setdefault(sub.topic, []).append(sub)
+
+        # one subscribe per topic filter; the max qos among its specs so a
+        # duplicate low-qos binding never downgrades another on the same filter
+        for topic, specs in self._mqtt_subscriptions.items():
+            qos = max(spec.qos for spec in specs)
+            self.mqtt_command_queue.put_nowait({"type": "subscribe", "topic": topic, "qos": qos})
 
     def _start_mqtt_periodic_publisher(self) -> None:
         for pub in self.bindings.publishers:
@@ -230,11 +234,13 @@ class Beacon:
                     continue
 
                 # match against subscription filters so wildcard topics (+, #)
-                # route; overlapping filters each get the message
+                # route; overlapping filters each get the message, as does
+                # every handler bound to the same filter
                 matched = [
                     spec
-                    for filt, spec in self._mqtt_subscriptions.items()
+                    for filt, specs in self._mqtt_subscriptions.items()
                     if topic_matches_sub(filt, topic)
+                    for spec in specs
                 ]
                 if not matched:
                     self.logger.debug("no handler registered for topic=%r", topic)
