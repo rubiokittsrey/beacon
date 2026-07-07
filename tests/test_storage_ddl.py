@@ -18,13 +18,6 @@ from beacon.storage import (
 )
 
 
-@pytest.fixture(autouse=True)
-def clean_registry():
-    registry.clear()
-    yield
-    registry.clear()
-
-
 def _spec_map(table_cls: type[Table]) -> dict[str, Any]:
     return {spec.name: spec for spec in columns_for(table_cls)}
 

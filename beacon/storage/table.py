@@ -10,6 +10,7 @@ from beacon.storage.ddl import columns_for
 
 if TYPE_CHECKING:
     from beacon.storage.ddl import ColumnSpec
+    from beacon.storage.engine import StorageEngine
 
 # CamelCase -> snake_case, keeping acronyms together (HTTPServerLog -> http_server_log)
 _SNAKE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
@@ -67,6 +68,16 @@ class Table(BaseModel):
     """
 
     __tablename__: ClassVar[str]
+    _engine: ClassVar[StorageEngine | None] = None
+
+    @classmethod
+    def bind_engine(cls, engine: StorageEngine) -> None:
+        Table._engine = engine
+
+    @classmethod
+    def unbind_engine(cls, engine: StorageEngine) -> None:
+        if Table._engine is engine:
+            Table._engine = None
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:

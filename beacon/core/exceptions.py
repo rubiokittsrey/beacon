@@ -9,9 +9,9 @@ class TableDefinitionError(TypeError):
 
 
 class StorageNotReadyError(RuntimeError):
-    def __init__(self, table: str):
+    def __init__(self, what: str):
         super().__init__(
-            f"no storage engine bound for table '{table}'; "
+            f"storage not ready: {what}; "
             "storage starts with app.start() (or StorageEngine.start())"
         )
 
