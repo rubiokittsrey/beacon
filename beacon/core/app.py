@@ -16,6 +16,12 @@ from beacon.utils.logging_conf import AsyncLogging, LoggingConfig, new_run_log_d
 
 
 class Beacon:
+    """The application: owns config, logging, and the MQTT client lifecycle.
+
+    Wires decorator bindings to the broker, routes inbound messages to their
+    handlers, and runs periodic publishers until a shutdown signal arrives.
+    """
+
     def __init__(self, name: str, config_path: Path | None = None):
         self.name = name
         self.config_path = config_path or Path("beacon.yaml")
@@ -50,7 +56,6 @@ class Beacon:
         self._config = load_config(self.config_path)
         self.logger.info("config loaded from %s", self.config_path)
 
-    # sets up handler for SIGINT and SIGTERM
     def _setup_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
 
@@ -97,6 +102,7 @@ class Beacon:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def start(self) -> None:
+        """Load config, start clients and background tasks, and run until shutdown."""
         await self._load_config()
         self._setup_logging()
 
@@ -105,10 +111,8 @@ class Beacon:
         try:
             self._setup_signal_handlers()
 
-            # start clients here
             await self._start_mqtt_client()
 
-            # TODO: allow connection attemptt to complete first before registering subscriptions
             self._register_mqtt_subscriptions()
             self._start_mqtt_periodic_publisher()
             self._start_mqtt_message_processor()
@@ -123,10 +127,6 @@ class Beacon:
         finally:
             if not self._shutdown_event.is_set():
                 await self._shutdown()
-
-    # -----------------------------------------------------#
-    #   MQTT client methods, processors, background tasks  #
-    # -----------------------------------------------------#
 
     async def _start_mqtt_client(self) -> None:
         assert self._config is not None
@@ -146,9 +146,7 @@ class Beacon:
         mqtt_task = asyncio.create_task(self._mqtt_client.start())
         self._tasks.append(mqtt_task)
 
-    # register mqtt subscriptions
-    # puts subcriptions passed from the mqtt handler binding into the mqtt command queue
-    # beacon-mqtt-client receives sub commands and subscribes with the paho client
+    # queues one subscribe command per topic filter; the client subscribes with paho
     def _register_mqtt_subscriptions(self) -> None:
         for sub in self.bindings.subscriptions:
             self._mqtt_subscriptions.setdefault(sub.topic, []).append(sub)
@@ -212,8 +210,7 @@ class Beacon:
     async def _process_mqtt_messages(self) -> None:
         while not self._shutdown_event.is_set():
             try:
-                # timeout of 0.1s to for non-blocking get
-                # allows checking of shutdown event every 0.1s
+                # short timeout so the shutdown event is checked ~10x/second
                 item = await asyncio.wait_for(self.mqtt_message_queue.get(), timeout=0.1)
 
                 if not isinstance(item, dict):

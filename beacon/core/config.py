@@ -11,11 +11,15 @@ if TYPE_CHECKING:
 
 
 class MQTTAuthConfig(BaseModel):
+    """MQTT username and password; both optional."""
+
     username: str | None = None
     password: str | None = None
 
 
 class MQTTConfig(BaseModel):
+    """MQTT broker connection settings."""
+
     host: str = "localhost"
     port: int = 1883
     keepalive: int = 60
@@ -23,6 +27,8 @@ class MQTTConfig(BaseModel):
 
 
 class LoggingConfig(BaseModel):
+    """Logging configuration: level, file rotation, and console output."""
+
     level: str = "DEBUG"
     console: bool = True
     max_bytes: int = 10 * 1024 * 1024
@@ -34,11 +40,14 @@ class LoggingConfig(BaseModel):
 
 
 class BeaconConfig(BaseModel):
+    """Top-level Beacon configuration loaded from YAML."""
+
     mqtt: MQTTConfig = MQTTConfig()
     logging: LoggingConfig = LoggingConfig()
 
 
 def load_config(path: Path) -> BeaconConfig:
+    """Load and validate `BeaconConfig` from a YAML file, or defaults if absent."""
     if not path.exists():
         return BeaconConfig()
 

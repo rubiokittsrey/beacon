@@ -59,12 +59,10 @@ registry = TableRegistry()
 class Table(BaseModel):
     """Declarative storage model: the pydantic model is the table definition.
 
-    Subclassing declares (and registers) a table. Column metadata comes
-    from `beacon.storage.field()`; plain pydantic fields become plain
-    columns. The table name defaults to the snake_case class name and can
-    be overridden with `__tablename__`. Because a `Table` is a plain
-    pydantic `BaseModel`, the same class works as `model=` on MQTT
-    bindings - one model is both the wire validator and the schema.
+    Subclassing declares and registers a table. Column metadata comes from
+    `field()`; the table name defaults to the snake_case class name unless
+    `__tablename__` is set. A `Table` is a plain `BaseModel`, so the same
+    class doubles as a `model=` validator on MQTT bindings.
     """
 
     __tablename__: ClassVar[str]

@@ -29,9 +29,12 @@ def _needs_json(spec: ColumnSpec) -> bool:
     return not (isinstance(py_type, type) and issubclass(py_type, (str, datetime)))
 
 
-# python value -> sqlite parameter for one column
-# aware datetimes are normalized to UTC ISO 8601; naive ones are stored as-is
 def encode_value(spec: ColumnSpec, value: Any) -> Any:
+    """Encode a python value into the sqlite parameter for one column.
+
+    Aware datetimes are normalized to UTC ISO 8601 and naive ones stored
+    as-is; non-string TEXT columns are serialized to JSON.
+    """
     if value is None:
         return None
 
@@ -56,9 +59,12 @@ def encode_value(spec: ColumnSpec, value: Any) -> Any:
     return value
 
 
-# sqlite value -> something pydantic can validate for one column
-# (scalars pass through; model_validate coerces bools, datetimes, enums)
 def decode_value(spec: ColumnSpec, value: Any) -> Any:
+    """Decode a sqlite value into something the table model can validate.
+
+    JSON TEXT columns are parsed back to python; scalars pass through and
+    are coerced by `model_validate` on the way in.
+    """
     if value is None:
         return None
     if _needs_json(spec) and isinstance(value, (str, bytes)):
@@ -71,9 +77,11 @@ class StorageEngine:
 
     `start()` opens the database (WAL mode), creates missing tables and
     indexes, applies additive column migrations, and binds itself onto
-    `Table` so the active-record API works. `stop()` is idempotent.
-    Reads are validated through the table model - the same
-    validation-at-the-edge policy inbound MQTT payloads get.
+    `Table`; `stop()` is idempotent. Reads are validated through the table
+    model, the same validation-at-the-edge policy inbound payloads get.
+
+    Raises:
+        StorageNotReadyError: If a raw query method runs before `start()`.
     """
 
     def __init__(self, path: str | Path = "beacon.db") -> None:
@@ -83,6 +91,7 @@ class StorageEngine:
         self._logger = logging.getLogger(__name__)
 
     async def start(self) -> None:
+        """Open the database, create/migrate schema, and bind the active-record API."""
         if self._started:
             return
 
@@ -100,6 +109,7 @@ class StorageEngine:
         self._logger.info("storage engine ready (%d tables)", len(registry))
 
     async def stop(self) -> None:
+        """Close the connection and unbind the active-record API (idempotent)."""
         if self._conn is None:
             return
 
@@ -108,10 +118,6 @@ class StorageEngine:
         await self._conn.close()
         self._conn = None
         self._started = False
-
-    # ------------------------------------------------------------------
-    # schema
-    # ------------------------------------------------------------------
 
     async def _create_tables(self) -> None:
         assert self._conn is not None
@@ -168,17 +174,15 @@ class StorageEngine:
                     name,
                 )
 
-    # ------------------------------------------------------------------
-    # row codecs
-    # ------------------------------------------------------------------
-
     def encode_row(self, instance: Table) -> dict[str, Any]:
+        """Encode a table instance to a column-name -> sqlite-value mapping."""
         return {
             spec.name: encode_value(spec, getattr(instance, spec.name))
             for spec in columns_for(type(instance))
         }
 
     def decode_row[T: Table](self, table_cls: type[T], row: Mapping[str, Any]) -> T:
+        """Rebuild a validated table instance from a database row."""
         keys = row.keys()
         data = {
             spec.name: decode_value(spec, row[spec.name])
@@ -187,10 +191,6 @@ class StorageEngine:
         }
         return table_cls.model_validate(data)
 
-    # ------------------------------------------------------------------
-    # raw escape hatch (parameterized sql only)
-    # ------------------------------------------------------------------
-
     async def execute(
         self,
         sql: str,
@@ -198,6 +198,7 @@ class StorageEngine:
         *,
         commit: bool = True,
     ) -> aiosqlite.Cursor:
+        """Run a parameterized statement, committing by default."""
         conn = self._require_conn()
         cursor = await conn.execute(sql, params)
         if commit:
@@ -205,11 +206,13 @@ class StorageEngine:
         return cursor
 
     async def fetchall(self, sql: str, params: Sequence[Any] = ()) -> list[aiosqlite.Row]:
+        """Run a parameterized query and return all rows."""
         conn = self._require_conn()
         cursor = await conn.execute(sql, params)
         return list(await cursor.fetchall())
 
     async def fetchone(self, sql: str, params: Sequence[Any] = ()) -> aiosqlite.Row | None:
+        """Run a parameterized query and return the first row, or None."""
         conn = self._require_conn()
         cursor = await conn.execute(sql, params)
         return await cursor.fetchone()

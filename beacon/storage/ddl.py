@@ -24,9 +24,10 @@ _TYPE_MAP: tuple[tuple[type, str], ...] = (
 )
 
 
-# describes one column derived from a pydantic model field
 @dataclass(frozen=True, slots=True)
 class ColumnSpec:
+    """One column derived from a pydantic model field."""
+
     name: str
     py_type: Any
     sql_type: str
@@ -61,9 +62,12 @@ def sqlite_type_for(py_type: Any) -> str:
     return "TEXT"
 
 
-# derives column specs from a pydantic model's fields, reading storage
-# metadata recorded by field() (plain pydantic fields become plain columns)
 def columns_for(model_cls: type[BaseModel]) -> list[ColumnSpec]:
+    """Derive column specs from a pydantic model's fields.
+
+    Storage metadata recorded by `field()` is read off each field; plain
+    pydantic fields become plain columns.
+    """
     specs: list[ColumnSpec] = []
     for name, info in model_cls.model_fields.items():
         extra = info.json_schema_extra
@@ -104,13 +108,17 @@ def _column_sql(spec: ColumnSpec) -> str:
 
 
 def create_table_sql(tablename: str, specs: list[ColumnSpec]) -> str:
+    """Build the `CREATE TABLE IF NOT EXISTS` statement for `specs`."""
     columns = ", ".join(_column_sql(spec) for spec in specs)
     return f'CREATE TABLE IF NOT EXISTS "{tablename}" ({columns})'
 
 
-# unique columns get their index from the UNIQUE constraint; pk from the
-# primary key itself - only plain index=True columns need explicit indexes
 def create_index_sql(tablename: str, specs: list[ColumnSpec]) -> list[str]:
+    """Build `CREATE INDEX` statements for the `index=True` columns.
+
+    Unique and primary-key columns are skipped; they already get an index
+    from their own constraint.
+    """
     return [
         f'CREATE INDEX IF NOT EXISTS "idx_{tablename}_{spec.name}" '
         f'ON "{tablename}" ("{spec.name}")'

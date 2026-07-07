@@ -10,6 +10,11 @@ from paho.mqtt import enums
 
 
 class BeaconMQTTClient:
+    """Async wrapper over the paho MQTT client.
+
+    Consumes subscribe/publish commands from `command_queue` and forwards
+    inbound broker messages onto `message_queue` for the app to dispatch.
+    """
 
     def __init__(
         self,
@@ -64,6 +69,7 @@ class BeaconMQTTClient:
 
 
     async def start(self) -> None:
+        """Connect to the broker and process commands until stopped."""
         self._logger.info("mqtt client starting id=%s", self.id)
         self._running = True
         self._shutdown_done = False
@@ -80,6 +86,7 @@ class BeaconMQTTClient:
             await self._shutdown()
 
     async def stop(self) -> None:
+        """Signal the command loop to stop and shut the client down."""
         self._running = False
         await self._shutdown()
 

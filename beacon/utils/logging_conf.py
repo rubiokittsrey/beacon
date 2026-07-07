@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Self
 
 
-# the asynclogging config dataclass
 @dataclass(slots=True)
 class LoggingConfig:
+    """Configuration for `AsyncLogging`: level, format, and file rotation."""
+
     log_file: Path
     level: int = logging.DEBUG
     fmt: str = "%(asctime)s - %(levelname)s - %(name)s:%(funcName)s - %(message)s"
@@ -20,6 +21,7 @@ class LoggingConfig:
 
 
 class AsyncLogging:
+    """Routes logging through a background queue listener so calls don't block."""
 
     def __init__(self, config: LoggingConfig):
         self.config = config
@@ -27,6 +29,7 @@ class AsyncLogging:
         self._listener: logging.handlers.QueueListener | None = None
 
     def start(self) -> None:
+        """Install the queue handler and start the background listener."""
         root = logging.getLogger()
         root.setLevel(self.config.level)
         root.handlers.clear()
@@ -63,6 +66,7 @@ class AsyncLogging:
         self._listener.start()
 
     def stop(self) -> None:
+        """Stop the background listener (idempotent)."""
         if self._listener is not None:
             self._listener.stop()
             self._listener = None
@@ -75,8 +79,8 @@ class AsyncLogging:
         self.stop()
 
 
-# generate unique log directories per run
 def new_run_log_dir(base: Path) -> Path:
+    """Create and return a unique per-run log directory under `base`."""
     ts = datetime.now(UTC).strftime("%Y-%m-%d")
     run_dir = base / ts
 

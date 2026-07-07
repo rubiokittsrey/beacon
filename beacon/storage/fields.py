@@ -21,10 +21,19 @@ def field(
     """Declare column metadata on a `Table` field.
 
     A thin wrapper over `pydantic.Field` that records storage metadata
-    (primary key, autoincrement, index, unique) without changing how the
-    model validates. `auto=True` implies `pk=True` and defaults the field
-    to `None` so instances can be constructed before the database assigns
-    the id; annotate such fields as `int | None`.
+    without changing how the model validates.
+
+    Args:
+        pk: Mark the column as the table's primary key.
+        auto: Autoincrementing integer pk; implies `pk=True` and defaults
+            the field to `None`, so annotate such fields as `int | None`.
+        index: Create a secondary index on the column.
+        unique: Add a `UNIQUE` constraint on the column.
+        default: Default value; omit for a required column.
+        default_factory: Zero-arg callable producing the default.
+
+    Returns:
+        A pydantic `FieldInfo` carrying the column metadata.
     """
     if auto:
         pk = True
