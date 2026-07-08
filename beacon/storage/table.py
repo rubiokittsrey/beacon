@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from pydantic import BaseModel
 
-from beacon.core.exceptions import TableDefinitionError
+from beacon.core.exceptions import StorageNotReadyError, TableDefinitionError
 from beacon.storage.ddl import columns_for
 
 if TYPE_CHECKING:
@@ -91,6 +91,59 @@ class Table(BaseModel):
     @classmethod
     def columns(cls) -> list[ColumnSpec]:
         return columns_for(cls)
+
+    @classmethod
+    def _require_engine(cls) -> StorageEngine:
+        if cls._engine is None:
+            what = f"{cls.__name__} is not bound to a running storage engine"
+            raise StorageNotReadyError(what)
+        return cls._engine
+
+    @classmethod
+    async def get(cls, **lookups: Any) -> Self | None:
+        """Return the first row matching `lookups`, or None if there is none."""
+        results = await cls._require_engine().fetch(cls, lookups, limit=1)
+        return results[0] if results else None
+
+    @classmethod
+    async def filter(
+        cls,
+        *,
+        order_by: str | list[str] | None = None,
+        limit: int | None = None,
+        **lookups: Any,
+    ) -> list[Self]:
+        """Return rows matching `lookups`, optionally ordered and capped.
+
+        Lookups are Django-style: `celsius__gt=30`, `sensor_id__in=[...]`,
+        `name__like="pump-%"`; `order_by="-ts"` sorts descending.
+        """
+        return await cls._require_engine().fetch(
+            cls, lookups, order_by=order_by, limit=limit
+        )
+
+    @classmethod
+    async def all(cls) -> list[Self]:
+        """Return every row of the table."""
+        return await cls._require_engine().fetch(cls, {})
+
+    @classmethod
+    async def count(cls, **lookups: Any) -> int:
+        """Return how many rows match `lookups` (every row if none given)."""
+        return await cls._require_engine().count(cls, lookups)
+
+    @classmethod
+    async def delete_where(cls, **lookups: Any) -> int:
+        """Delete rows matching `lookups`; return how many were removed."""
+        return await cls._require_engine().delete_where(cls, lookups)
+
+    async def save(self) -> None:
+        """Insert this row, or update it when its primary key is already set."""
+        await self._require_engine().save(self)
+
+    async def delete(self) -> None:
+        """Delete the row identified by this instance's primary key."""
+        await self._require_engine().delete(self)
 
 
 def _validate_definition(tablename: str, specs: list[ColumnSpec]) -> None:

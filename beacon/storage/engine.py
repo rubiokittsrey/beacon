@@ -4,13 +4,14 @@ import json
 import logging
 from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aiosqlite
 from pydantic import BaseModel
 
 from beacon.core.exceptions import StorageNotReadyError
 from beacon.storage.ddl import columns_for, create_index_sql, create_table_sql
+from beacon.storage.query import build_order_by, build_where
 from beacon.storage.table import Table, registry
 
 if TYPE_CHECKING:
@@ -70,6 +71,26 @@ def decode_value(spec: ColumnSpec, value: Any) -> Any:
     if _needs_json(spec) and isinstance(value, (str, bytes)):
         return json.loads(value)
     return value
+
+
+def _columns_by_name(table_cls: type[Table]) -> dict[str, ColumnSpec]:
+    return {spec.name: spec for spec in columns_for(table_cls)}
+
+
+def _insert_sql(tablename: str, values: Mapping[str, Any]) -> tuple[str, list[Any]]:
+    if not values:
+        return f'INSERT INTO "{tablename}" DEFAULT VALUES', []
+    columns = ", ".join(f'"{name}"' for name in values)
+    placeholders = ", ".join("?" for _ in values)
+    sql = f'INSERT INTO "{tablename}" ({columns}) VALUES ({placeholders})'  # noqa: S608
+    return sql, list(values.values())
+
+
+def _upsert_sql(tablename: str, values: Mapping[str, Any], pk: str) -> tuple[str, list[Any]]:
+    insert, params = _insert_sql(tablename, values)
+    updates = ", ".join(f'"{name}" = excluded."{name}"' for name in values if name != pk)
+    action = f"DO UPDATE SET {updates}" if updates else "DO NOTHING"
+    return f'{insert} ON CONFLICT("{pk}") {action}', params
 
 
 class StorageEngine:
@@ -190,6 +211,87 @@ class StorageEngine:
             if spec.name in keys
         }
         return table_cls.model_validate(data)
+
+    async def fetch[T: Table](
+        self,
+        table_cls: type[T],
+        lookups: Mapping[str, Any],
+        *,
+        order_by: str | list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[T]:
+        """Run a SELECT for `table_cls` and return validated instances."""
+        tablename = table_cls.__tablename__
+        columns = _columns_by_name(table_cls)
+        where, params = build_where(tablename, columns, encode_value, lookups)
+
+        sql = f'SELECT * FROM "{tablename}"'  # noqa: S608
+        if where:
+            sql += f" WHERE {where}"
+        if order_by is not None:
+            sql += f" ORDER BY {build_order_by(tablename, columns, order_by)}"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+
+        rows = await self.fetchall(sql, params)
+        return [self.decode_row(table_cls, cast("Mapping[str, Any]", row)) for row in rows]
+
+    async def count(self, table_cls: type[Table], lookups: Mapping[str, Any]) -> int:
+        """Return how many rows of `table_cls` match `lookups`."""
+        tablename = table_cls.__tablename__
+        columns = _columns_by_name(table_cls)
+        where, params = build_where(tablename, columns, encode_value, lookups)
+
+        sql = f'SELECT COUNT(*) FROM "{tablename}"'  # noqa: S608
+        if where:
+            sql += f" WHERE {where}"
+
+        row = await self.fetchone(sql, params)
+        return int(row[0]) if row is not None else 0
+
+    async def delete_where(self, table_cls: type[Table], lookups: Mapping[str, Any]) -> int:
+        """Delete every row of `table_cls` matching `lookups`; return the count."""
+        tablename = table_cls.__tablename__
+        columns = _columns_by_name(table_cls)
+        where, params = build_where(tablename, columns, encode_value, lookups)
+
+        sql = f'DELETE FROM "{tablename}"'  # noqa: S608
+        if where:
+            sql += f" WHERE {where}"
+
+        cursor = await self.execute(sql, params)
+        return cursor.rowcount
+
+    async def save(self, instance: Table) -> None:
+        """Insert `instance`, or upsert it when its primary key is set.
+
+        An unset autoincrement pk takes the INSERT path and the generated
+        rowid is written back onto the instance; any other pk value upserts
+        via `ON CONFLICT` so re-saving a loaded row updates it in place.
+        """
+        specs = columns_for(type(instance))
+        pk = next(spec for spec in specs if spec.pk)
+        encoded = self.encode_row(instance)
+        tablename = instance.__tablename__
+
+        if pk.auto and encoded[pk.name] is None:
+            insert = {name: value for name, value in encoded.items() if name != pk.name}
+            cursor = await self.execute(*_insert_sql(tablename, insert))
+            setattr(instance, pk.name, cursor.lastrowid)
+            return
+
+        await self.execute(*_upsert_sql(tablename, encoded, pk.name))
+
+    async def delete(self, instance: Table) -> None:
+        """Delete the row identified by `instance`'s primary key."""
+        specs = columns_for(type(instance))
+        pk = next(spec for spec in specs if spec.pk)
+        value = encode_value(pk, getattr(instance, pk.name))
+        await self.execute(
+            f'DELETE FROM "{instance.__tablename__}" WHERE "{pk.name}" = ?',  # noqa: S608
+            [value],
+        )
 
     async def execute(
         self,
