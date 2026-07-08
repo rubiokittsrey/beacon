@@ -43,6 +43,9 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 addopts = "--strict-markers"
+markers = [
+    "stress: load/concurrency stress tests (deselect with -m 'not stress')",
+]
 
 [tool.ruff]
 target-version = "py313"
