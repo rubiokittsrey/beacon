@@ -39,11 +39,18 @@ class LoggingConfig(BaseModel):
         return getattr(logging, self.level.upper(), logging.DEBUG)
 
 
+class StorageConfig(BaseModel):
+    """SQLite storage settings; `path` may be `:memory:` for an ephemeral db."""
+
+    path: str = "beacon.db"
+
+
 class BeaconConfig(BaseModel):
     """Top-level Beacon configuration loaded from YAML."""
 
     mqtt: MQTTConfig = MQTTConfig()
     logging: LoggingConfig = LoggingConfig()
+    storage: StorageConfig = StorageConfig()
 
 
 def load_config(path: Path) -> BeaconConfig:

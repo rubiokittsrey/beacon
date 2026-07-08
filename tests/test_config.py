@@ -8,6 +8,7 @@ from beacon.core.config import (
     LoggingConfig,
     MQTTAuthConfig,
     MQTTConfig,
+    StorageConfig,
     load_config,
 )
 
@@ -17,6 +18,10 @@ class TestDefaults:
         cfg = BeaconConfig()
         assert isinstance(cfg.mqtt, MQTTConfig)
         assert isinstance(cfg.logging, LoggingConfig)
+        assert isinstance(cfg.storage, StorageConfig)
+
+    def test_storage_config_defaults(self) -> None:
+        assert StorageConfig().path == "beacon.db"
 
     def test_mqtt_config_defaults(self) -> None:
         mqtt = MQTTConfig()
@@ -61,7 +66,9 @@ class TestLoadConfig:
             "    password: secret\n"
             "logging:\n"
             "  level: INFO\n"
-            "  console: false\n",
+            "  console: false\n"
+            "storage:\n"
+            "  path: /var/lib/beacon.db\n",
             encoding="utf-8",
         )
 
@@ -72,6 +79,7 @@ class TestLoadConfig:
         assert cfg.mqtt.auth == MQTTAuthConfig(username="bob", password="secret")
         assert cfg.logging.level == "INFO"
         assert cfg.logging.console is False
+        assert cfg.storage.path == "/var/lib/beacon.db"
 
     def test_partial_yaml_keeps_defaults_for_missing_keys(self, tmp_path: Path) -> None:
         path = tmp_path / "beacon.yaml"

@@ -11,3 +11,6 @@ logging:
   console: true
   max_bytes: 10485760
   backup_count: 5
+
+storage:
+  path: beacon.db  # sqlite file; ":memory:" for an ephemeral database

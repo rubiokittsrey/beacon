@@ -9,8 +9,10 @@ import pytest
 from pydantic import BaseModel
 
 from beacon.core.app import Beacon
+from beacon.core.config import BeaconConfig, StorageConfig
 from beacon.mqtt.decorators import PublisherSpec, SubscriptionSpec
 from beacon.mqtt.messages import Message
+from beacon.storage import Table, field
 
 
 class Reading(BaseModel):
@@ -339,3 +341,39 @@ class TestRunPublisher:
         app._shutdown_event.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+class TestStorageLifecycle:
+    def _configure(self, app: Beacon) -> None:
+        app._config = BeaconConfig(storage=StorageConfig(path=":memory:"))
+
+    async def test_skipped_when_no_tables_registered(self, app: Beacon) -> None:
+        self._configure(app)
+        await app._start_storage()
+        assert app.storage is None
+
+    async def test_engine_starts_and_binds_when_tables_registered(self, app: Beacon) -> None:
+        class Thing(Table):
+            id: int | None = field(pk=True, auto=True)
+            name: str
+
+        self._configure(app)
+        await app._start_storage()
+        try:
+            assert app.storage is not None
+            assert Table._engine is app.storage
+        finally:
+            await app.storage.stop()  # type: ignore[union-attr]
+
+    async def test_shutdown_stops_storage_and_unbinds(self, app: Beacon) -> None:
+        class Thing(Table):
+            id: int | None = field(pk=True, auto=True)
+            name: str
+
+        self._configure(app)
+        await app._start_storage()
+        await app._shutdown()
+
+        assert Table._engine is None
+        assert app.storage is not None
+        assert app.storage._conn is None

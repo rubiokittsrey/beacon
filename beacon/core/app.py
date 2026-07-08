@@ -12,6 +12,7 @@ from pydantic import BaseModel, ValidationError
 
 from beacon.core.config import BeaconConfig, load_config
 from beacon.mqtt import BeaconMQTTClient, Message, MQTTBindings, PublisherSpec, SubscriptionSpec
+from beacon.storage import StorageEngine, registry
 from beacon.utils.logging_conf import AsyncLogging, LoggingConfig, new_run_log_dir
 
 
@@ -33,6 +34,7 @@ class Beacon:
 
         # app clients
         self._mqtt_client: BeaconMQTTClient | None = None
+        self.storage: StorageEngine | None = None
 
         # mqtt dsl bindings + subscription routing table (topic filter -> specs;
         # a list so multiple handlers can bind to the same filter)
@@ -85,6 +87,9 @@ class Beacon:
         if self._mqtt_client:
             await self._mqtt_client.stop()
 
+        if self.storage:
+            await self.storage.stop()
+
         if self._async_logging:
             self._async_logging.stop()
 
@@ -111,6 +116,9 @@ class Beacon:
         try:
             self._setup_signal_handlers()
 
+            # storage comes up before subscriptions so handlers can save from
+            # the very first message
+            await self._start_storage()
             await self._start_mqtt_client()
 
             self._register_mqtt_subscriptions()
@@ -127,6 +135,17 @@ class Beacon:
         finally:
             if not self._shutdown_event.is_set():
                 await self._shutdown()
+
+    # brings up the storage engine only when tables are declared; an app with
+    # no Table subclasses imported skips storage entirely (zero behavior change)
+    async def _start_storage(self) -> None:
+        if not registry.tables:
+            self.logger.debug("no tables registered; skipping storage engine")
+            return
+
+        assert self._config is not None
+        self.storage = StorageEngine(self._config.storage.path)
+        await self.storage.start()
 
     async def _start_mqtt_client(self) -> None:
         assert self._config is not None
