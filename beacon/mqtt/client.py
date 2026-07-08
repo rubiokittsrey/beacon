@@ -8,6 +8,10 @@ from typing import Any
 from paho.mqtt import client as paho_mqtt
 from paho.mqtt import enums
 
+# rate limit for the queue-full warning so a sustained burst logs a
+# heartbeat with a running total instead of one line per drop
+_DROP_LOG_INTERVAL_S = 5.0
+
 
 class BeaconMQTTClient:
     """Async wrapper over the paho MQTT client.
@@ -51,6 +55,10 @@ class BeaconMQTTClient:
 
         self._running = False
         self._shutdown_done = False
+
+        # messages shed when the (bounded) message queue is full
+        self._dropped_total = 0
+        self._last_drop_log = 0.0
 
         # event loop captured in start(); paho callbacks run on the network
         # thread and need it to hand messages back to the loop thread
@@ -156,12 +164,44 @@ class BeaconMQTTClient:
             return
 
         try:
-            self._loop.call_soon_threadsafe(self._message_queue.put_nowait, item)
+            self._loop.call_soon_threadsafe(self._enqueue_message, item)
         except RuntimeError:
             # loop already closed mid-shutdown
             self._logger.warning(
                 "event loop closed, dropping message from topic=%s", message.topic
             )
+
+    @property
+    def dropped_messages(self) -> int:
+        """How many inbound messages were shed because the queue was full."""
+        return self._dropped_total
+
+    # runs on the loop thread (via call_soon_threadsafe). When the bounded
+    # queue is full, the oldest message is evicted so the newest telemetry
+    # wins; drops are counted and warned about at most every few seconds —
+    # blocking paho's network thread instead would stall keepalives
+    def _enqueue_message(self, item: dict[str, Any]) -> None:
+        dropped = 0
+        while True:
+            try:
+                self._message_queue.put_nowait(item)
+                break
+            except asyncio.QueueFull:
+                try:
+                    self._message_queue.get_nowait()
+                    dropped += 1
+                except asyncio.QueueEmpty:
+                    continue
+
+        if dropped:
+            self._dropped_total += dropped
+            now = time.monotonic()
+            if now - self._last_drop_log >= _DROP_LOG_INTERVAL_S:
+                self._last_drop_log = now
+                self._logger.warning(
+                    "message queue full; dropping oldest (%d dropped since start)",
+                    self._dropped_total,
+                )
 
     async def _process_commands(self) -> None:
         while self._running:

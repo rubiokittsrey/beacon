@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -77,24 +78,81 @@ class TestRegisterSubscriptions:
         assert app.mqtt_command_queue.empty()
 
 
-class TestPruneDoneTasks:
-    async def test_done_tasks_are_removed(self, app: Beacon) -> None:
-        async def quick() -> None:
-            return None
+class TestHandlerBackpressure:
+    async def test_concurrent_handlers_capped_by_semaphore(self, app: Beacon) -> None:
+        app._handler_semaphore = asyncio.Semaphore(2)
+        running = 0
+        peak = 0
+        done: list[int] = []
 
-        async def slow() -> None:
-            await asyncio.sleep(10)
+        async def handler(_msg: Message[Any]) -> None:
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.02)
+            running -= 1
+            done.append(1)
 
-        done = asyncio.create_task(quick())
-        pending = asyncio.create_task(slow())
-        await done
+        app._mqtt_subscriptions["a/b"] = [SubscriptionSpec(topic="a/b", qos=0, handler=handler)]
+        for _ in range(6):
+            app.mqtt_message_queue.put_nowait(_message_item("a/b", "{}"))
 
-        app._tasks = [done, pending]
-        app._prune_done_tasks()
+        processor = asyncio.create_task(app._process_mqtt_messages())
+        for _ in range(200):
+            if len(done) == 6:
+                break
+            await asyncio.sleep(0.01)
+        app._shutdown_event.set()
+        await asyncio.gather(processor, return_exceptions=True)
 
-        assert app._tasks == [pending]
+        assert len(done) == 6  # saturation delays handlers, never loses them
+        assert peak <= 2
 
-        pending.cancel()
+    async def test_handler_tasks_are_untracked_when_done(self, app: Beacon) -> None:
+        received: list[Message[Any]] = []
+
+        async def handler(msg: Message[Any]) -> None:
+            received.append(msg)
+
+        app._mqtt_subscriptions["a/b"] = [SubscriptionSpec(topic="a/b", qos=0, handler=handler)]
+        app.mqtt_message_queue.put_nowait(_message_item("a/b", "{}"))
+
+        await _run_processor_until(app, received)
+        # done callbacks run on the next loop pass
+        await asyncio.sleep(0)
+
+        assert received
+        assert app._handler_tasks == set()
+
+    async def test_handler_exception_is_logged_and_slot_released(
+        self, app: Beacon, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        app._handler_semaphore = asyncio.Semaphore(1)
+        received: list[Message[Any]] = []
+
+        async def failing(_msg: Message[Any]) -> None:
+            what = "boom"
+            raise RuntimeError(what)
+
+        async def ok(msg: Message[Any]) -> None:
+            received.append(msg)
+
+        app._mqtt_subscriptions["bad/topic"] = [
+            SubscriptionSpec(topic="bad/topic", qos=0, handler=failing)
+        ]
+        app._mqtt_subscriptions["good/topic"] = [
+            SubscriptionSpec(topic="good/topic", qos=0, handler=ok)
+        ]
+        # with only one slot, the good handler can only run if the failing
+        # one released its slot on the way out
+        app.mqtt_message_queue.put_nowait(_message_item("bad/topic", "{}"))
+        app.mqtt_message_queue.put_nowait(_message_item("good/topic", "{}"))
+
+        with caplog.at_level(logging.ERROR):
+            await _run_processor_until(app, received)
+
+        assert len(received) == 1
+        assert "handler error topic='bad/topic'" in caplog.text
 
 
 class TestLoadConfig:
@@ -204,7 +262,7 @@ class TestOutgoingMessageProcessor:
         await asyncio.gather(processor, return_exceptions=True)
 
         # no handler tasks should have been tracked
-        assert app._tasks == []
+        assert app._handler_tasks == set()
 
 
 class TestInboundValidation:

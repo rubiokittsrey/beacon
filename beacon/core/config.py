@@ -18,12 +18,19 @@ class MQTTAuthConfig(BaseModel):
 
 
 class MQTTConfig(BaseModel):
-    """MQTT broker connection settings."""
+    """MQTT broker connection settings and inbound flow limits.
+
+    `message_queue_size` bounds the inbound message backlog (oldest are
+    dropped once full); `max_concurrent_handlers` caps how many handler
+    tasks run at once.
+    """
 
     host: str = "localhost"
     port: int = 1883
     keepalive: int = 60
     auth: MQTTAuthConfig = MQTTAuthConfig()
+    message_queue_size: int = 1000
+    max_concurrent_handlers: int = 64
 
 
 class LoggingConfig(BaseModel):
@@ -40,9 +47,14 @@ class LoggingConfig(BaseModel):
 
 
 class StorageConfig(BaseModel):
-    """SQLite storage settings; `path` may be `:memory:` for an ephemeral db."""
+    """SQLite storage settings; `path` may be `:memory:` for an ephemeral db.
+
+    `commit_delay` is the group-commit coalescing window in seconds: writes
+    landing within it share one commit.
+    """
 
     path: str = "beacon.db"
+    commit_delay: float = 0.01
 
 
 class BeaconConfig(BaseModel):

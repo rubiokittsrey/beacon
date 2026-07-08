@@ -9,6 +9,8 @@ from beacon.core.exceptions import StorageNotReadyError, TableDefinitionError
 from beacon.storage.ddl import columns_for
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from beacon.storage.ddl import ColumnSpec
     from beacon.storage.engine import StorageEngine
 
@@ -136,6 +138,11 @@ class Table(BaseModel):
     async def delete_where(cls, **lookups: Any) -> int:
         """Delete rows matching `lookups`; return how many were removed."""
         return await cls._require_engine().delete_where(cls, lookups)
+
+    @classmethod
+    async def save_many(cls, instances: Sequence[Self]) -> None:
+        """Save every instance in `instances`, sharing a single commit."""
+        await cls._require_engine().save_many(instances)
 
     async def save(self) -> None:
         """Insert this row, or update it when its primary key is already set."""

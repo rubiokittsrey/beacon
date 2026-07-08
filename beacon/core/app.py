@@ -4,13 +4,14 @@ import asyncio
 import json
 import logging
 import signal
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from paho.mqtt.client import topic_matches_sub
 from pydantic import BaseModel, ValidationError
 
-from beacon.core.config import BeaconConfig, load_config
+from beacon.core.config import BeaconConfig, MQTTConfig, load_config
 from beacon.mqtt import BeaconMQTTClient, Message, MQTTBindings, PublisherSpec, SubscriptionSpec
 from beacon.storage import StorageEngine, registry
 from beacon.utils.logging_conf import AsyncLogging, LoggingConfig, new_run_log_dir
@@ -29,8 +30,12 @@ class Beacon:
 
         self._shutdown_event = asyncio.Event()
 
-        # async runtime state
+        # async runtime state: long-lived tasks (mqtt client, publishers,
+        # message processor) and the ephemeral per-message handler tasks,
+        # whose count is capped by the semaphore
         self._tasks: list[asyncio.Task[Any]] = []
+        self._handler_tasks: set[asyncio.Task[Any]] = set()
+        self._handler_semaphore = asyncio.Semaphore(MQTTConfig().max_concurrent_handlers)
 
         # app clients
         self._mqtt_client: BeaconMQTTClient | None = None
@@ -43,9 +48,14 @@ class Beacon:
 
         # asyncio queues for mqtt communication:
         # commands (subscribe/publish) flow to the client via mqtt_command_queue,
-        # broker messages flow back to handlers via mqtt_message_queue
+        # broker messages flow back to handlers via mqtt_message_queue (bounded;
+        # the client drops oldest when it fills); the message queue and handler
+        # semaphore are rebuilt from config in start(), the defaults here cover
+        # use before/without start()
         self.mqtt_command_queue: asyncio.Queue[Any] = asyncio.Queue()
-        self.mqtt_message_queue: asyncio.Queue[Any] = asyncio.Queue()
+        self.mqtt_message_queue: asyncio.Queue[Any] = asyncio.Queue(
+            maxsize=MQTTConfig().message_queue_size
+        )
 
         # config
         self._config: BeaconConfig | None = None
@@ -95,16 +105,14 @@ class Beacon:
 
         await self._cancel_tasks()
 
-    def _prune_done_tasks(self) -> None:
-        self._tasks = [t for t in self._tasks if not t.done()]
-
     async def _cancel_tasks(self) -> None:
-        for task in self._tasks:
+        tasks = [*self._tasks, *self._handler_tasks]
+        for task in tasks:
             if not task.done():
                 task.cancel()
 
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def start(self) -> None:
         """Load config, start clients and background tasks, and run until shutdown."""
@@ -144,12 +152,18 @@ class Beacon:
             return
 
         assert self._config is not None
-        self.storage = StorageEngine(self._config.storage.path)
+        storage_cfg = self._config.storage
+        self.storage = StorageEngine(storage_cfg.path, commit_delay=storage_cfg.commit_delay)
         await self.storage.start()
 
     async def _start_mqtt_client(self) -> None:
         assert self._config is not None
         mqtt_cfg = self._config.mqtt
+
+        # apply configured flow limits before the client gets the queue;
+        # nothing has enqueued messages yet at this point
+        self.mqtt_message_queue = asyncio.Queue(maxsize=mqtt_cfg.message_queue_size)
+        self._handler_semaphore = asyncio.Semaphore(mqtt_cfg.max_concurrent_handlers)
 
         self._mqtt_client = BeaconMQTTClient(
             id=f"{self.name}-mqtt-client",
@@ -263,14 +277,20 @@ class Beacon:
                     continue
 
                 # build a message per matched spec (validating against its
-                # model) and run each handler as a task (added to tracked tasks)
-                self._prune_done_tasks()
+                # model) and run each handler as a task; the semaphore caps
+                # in-flight handlers, and while saturated this loop stops
+                # draining the queue, which fills, and the client sheds
+                # oldest at the edge — the backpressure chain under burst
                 for spec in matched:
                     msg = self._build_message(spec, topic, payload, timestamp)
                     if msg is None:
                         continue
+                    await self._handler_semaphore.acquire()
                     handler_task = asyncio.create_task(spec.handler(msg))
-                    self._tasks.append(handler_task)
+                    self._handler_tasks.add(handler_task)
+                    handler_task.add_done_callback(
+                        partial(self._on_handler_done, topic=topic)
+                    )
 
             except TimeoutError:
                 continue
@@ -280,6 +300,17 @@ class Beacon:
 
             except Exception:
                 self.logger.exception("error processing mqtt message")
+
+    # releases the handler's semaphore slot and surfaces its exception, if
+    # any; runs for every handler task, including cancelled ones
+    def _on_handler_done(self, task: asyncio.Task[Any], *, topic: str) -> None:
+        self._handler_tasks.discard(task)
+        self._handler_semaphore.release()
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self.logger.error("handler error topic=%r", topic, exc_info=exc)
 
     # builds the Message handed to a subscription handler, validating the
     # payload against the subscription's model when one is declared

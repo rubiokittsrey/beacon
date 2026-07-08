@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from datetime import UTC, datetime, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -255,6 +257,112 @@ async def test_migration_warns_on_removed_and_retyped_columns(
 
     assert "device.name is TEXT in the database but maps to REAL" in caplog.text
     assert "column device.rssi exists in the database but not on the model" in caplog.text
+
+
+
+# --------------------------------------------------------- group commit
+
+
+async def test_synchronous_normal_enabled(tmp_path: Path) -> None:
+    engine = await _started_engine(tmp_path / "test.db")
+    try:
+        row = await engine.fetchone("PRAGMA synchronous")
+        assert row is not None
+        assert row[0] == 1  # NORMAL
+    finally:
+        await engine.stop()
+
+
+# wraps the connection's commit with a counter; returns the counter cell
+def _count_commits(engine: StorageEngine) -> list[int]:
+    assert engine._conn is not None
+    conn = engine._conn
+    real_commit = conn.commit
+    commits = [0]
+
+    async def counting_commit() -> None:
+        commits[0] += 1
+        await real_commit()
+
+    conn.commit = counting_commit  # type: ignore[method-assign]
+    return commits
+
+
+async def test_burst_of_saves_shares_one_commit(tmp_path: Path) -> None:
+    reading_cls = _reading_table()
+    engine = StorageEngine(tmp_path / "test.db", commit_delay=0.05)
+    await engine.start()
+    try:
+        commits = _count_commits(engine)
+
+        rows = [reading_cls(sensor_id=f"s{i}", celsius=float(i)) for i in range(10)]
+        await asyncio.gather(*(row.save() for row in rows))
+
+        assert commits[0] == 1  # the whole burst coalesced
+        assert sorted(row.id for row in rows) == list(range(1, 11))
+        assert await reading_cls.count() == 10
+    finally:
+        await engine.stop()
+
+
+async def test_stop_flushes_pending_commit_early(tmp_path: Path) -> None:
+    reading_cls = _reading_table()
+    db = tmp_path / "test.db"
+    engine = StorageEngine(db, commit_delay=30.0)
+    await engine.start()
+
+    save_task = asyncio.create_task(reading_cls(sensor_id="s1", celsius=1.0).save())
+    await asyncio.sleep(0.05)  # let the INSERT execute and the flush cycle start
+
+    started = time.monotonic()
+    await engine.stop()
+    await asyncio.wait_for(save_task, timeout=1.0)
+    assert time.monotonic() - started < 5.0  # did not wait out commit_delay
+
+    engine = await _started_engine(db)
+    try:
+        assert await reading_cls.count() == 1
+    finally:
+        await engine.stop()
+
+
+async def test_save_many_shares_one_commit_and_backfills_ids(tmp_path: Path) -> None:
+    reading_cls = _reading_table()
+    engine = await _started_engine(tmp_path / "test.db")
+    try:
+        commits = _count_commits(engine)
+
+        rows = [reading_cls(sensor_id=f"s{i}", celsius=float(i)) for i in range(5)]
+        await reading_cls.save_many(rows)
+
+        assert commits[0] == 1
+        assert [row.id for row in rows] == [1, 2, 3, 4, 5]
+
+        await reading_cls.save_many([])  # empty batch is a no-op
+        assert commits[0] == 1
+    finally:
+        await engine.stop()
+
+
+async def test_commit_failure_propagates_to_awaiting_writers(tmp_path: Path) -> None:
+    reading_cls = _reading_table()
+    engine = await _started_engine(tmp_path / "test.db")
+    try:
+        assert engine._conn is not None
+
+        async def failing_commit() -> None:
+            what = "disk I/O error"
+            raise RuntimeError(what)
+
+        real_commit = engine._conn.commit
+        engine._conn.commit = failing_commit  # type: ignore[method-assign]
+        try:
+            with pytest.raises(RuntimeError, match="disk I/O error"):
+                await reading_cls(sensor_id="s1", celsius=1.0).save()
+        finally:
+            engine._conn.commit = real_commit  # type: ignore[method-assign]
+    finally:
+        await engine.stop()
 
 
 async def test_data_persists_across_reopen(tmp_path: Path) -> None:

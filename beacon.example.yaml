@@ -5,6 +5,8 @@ mqtt:
   auth:
     username: null
     password: null
+  message_queue_size: 1000     # inbound backlog cap; oldest dropped when full
+  max_concurrent_handlers: 64  # handler tasks running at once
 
 logging:
   level: DEBUG
@@ -13,4 +15,5 @@ logging:
   backup_count: 5
 
 storage:
-  path: beacon.db  # sqlite file; ":memory:" for an ephemeral database
+  path: beacon.db     # sqlite file; ":memory:" for an ephemeral database
+  commit_delay: 0.01  # group-commit window (s): writes within it share one commit

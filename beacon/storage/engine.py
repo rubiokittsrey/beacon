@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -101,15 +103,28 @@ class StorageEngine:
     `Table`; `stop()` is idempotent. Reads are validated through the table
     model, the same validation-at-the-edge policy inbound payloads get.
 
+    Writes are group-committed: a statement run with `commit=True` awaits a
+    shared commit scheduled `commit_delay` seconds out, so concurrent writes
+    (a burst of handler `save()` calls) share one fsync instead of paying one
+    each. `await save()` still returns only after its commit has landed.
+
     Raises:
         StorageNotReadyError: If a raw query method runs before `start()`.
     """
 
-    def __init__(self, path: str | Path = "beacon.db") -> None:
+    def __init__(self, path: str | Path = "beacon.db", *, commit_delay: float = 0.01) -> None:
         self.path = str(path)
+        self.commit_delay = commit_delay
         self._conn: aiosqlite.Connection | None = None
         self._started = False
         self._logger = logging.getLogger(__name__)
+
+        # group-commit state, one "cycle" at a time: the pending future
+        # resolves when the shared commit lands, the wakeup event lets
+        # stop() flush early instead of waiting out the delay
+        self._commit_pending: asyncio.Future[None] | None = None
+        self._flush_task: asyncio.Task[None] | None = None
+        self._flush_wakeup: asyncio.Event | None = None
 
     async def start(self) -> None:
         """Open the database, create/migrate schema, and bind the active-record API."""
@@ -121,6 +136,9 @@ class StorageEngine:
         self._conn.row_factory = aiosqlite.Row
 
         await self._conn.execute("PRAGMA journal_mode=WAL")
+        # WAL + NORMAL skips the fsync-per-commit of FULL; worst case on
+        # power loss is the last few transactions, never corruption
+        await self._conn.execute("PRAGMA synchronous=NORMAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._create_tables()
         await self._conn.commit()
@@ -130,15 +148,50 @@ class StorageEngine:
         self._logger.info("storage engine ready (%d tables)", len(registry))
 
     async def stop(self) -> None:
-        """Close the connection and unbind the active-record API (idempotent)."""
+        """Flush any pending commit, close, and unbind the active-record API (idempotent)."""
         if self._conn is None:
             return
 
         self._logger.info("storage engine stopping")
         Table.unbind_engine(self)
+
+        # wake the pending flush (if any) so in-flight writes commit now
+        # instead of waiting out the delay, then close behind it
+        if self._flush_task is not None:
+            if self._flush_wakeup is not None:
+                self._flush_wakeup.set()
+            await self._flush_task
+            self._flush_task = None
+            self._flush_wakeup = None
+
         await self._conn.close()
         self._conn = None
         self._started = False
+
+    async def _commit_soon(self) -> None:
+        # join the current group-commit cycle, starting one if none is
+        # pending; resolves once the shared commit has landed
+        if self._commit_pending is None:
+            self._commit_pending = asyncio.get_running_loop().create_future()
+            self._flush_wakeup = asyncio.Event()
+            self._flush_task = asyncio.create_task(self._delayed_flush(self._flush_wakeup))
+        await self._commit_pending
+
+    async def _delayed_flush(self, wakeup: asyncio.Event) -> None:
+        # wait out the coalescing window (or an early wakeup from stop()),
+        # then commit once for every write that joined this cycle
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(wakeup.wait(), self.commit_delay)
+
+        pending, self._commit_pending = self._commit_pending, None
+        if pending is None:
+            return
+        try:
+            await self._require_conn().commit()
+        except Exception as exc:  # noqa: BLE001 - delivered to every awaiting writer
+            pending.set_exception(exc)
+        else:
+            pending.set_result(None)
 
     async def _create_tables(self) -> None:
         assert self._conn is not None
@@ -263,7 +316,7 @@ class StorageEngine:
         cursor = await self.execute(sql, params)
         return cursor.rowcount
 
-    async def save(self, instance: Table) -> None:
+    async def save(self, instance: Table, *, commit: bool = True) -> None:
         """Insert `instance`, or upsert it when its primary key is set.
 
         An unset autoincrement pk takes the INSERT path and the generated
@@ -277,11 +330,21 @@ class StorageEngine:
 
         if pk.auto and encoded[pk.name] is None:
             insert = {name: value for name, value in encoded.items() if name != pk.name}
-            cursor = await self.execute(*_insert_sql(tablename, insert))
+            cursor = await self.execute(*_insert_sql(tablename, insert), commit=commit)
             setattr(instance, pk.name, cursor.lastrowid)
             return
 
-        await self.execute(*_upsert_sql(tablename, encoded, pk.name))
+        await self.execute(*_upsert_sql(tablename, encoded, pk.name), commit=commit)
+
+    async def save_many(self, instances: Sequence[Table]) -> None:
+        """Save every instance, sharing a single commit across the batch.
+
+        Autoincrement pks are written back per row, same as `save()`.
+        """
+        for instance in instances:
+            await self.save(instance, commit=False)
+        if instances:
+            await self._commit_soon()
 
     async def delete(self, instance: Table) -> None:
         """Delete the row identified by `instance`'s primary key."""
@@ -300,11 +363,11 @@ class StorageEngine:
         *,
         commit: bool = True,
     ) -> aiosqlite.Cursor:
-        """Run a parameterized statement, committing by default."""
+        """Run a parameterized statement, joining a group commit by default."""
         conn = self._require_conn()
         cursor = await conn.execute(sql, params)
         if commit:
-            await conn.commit()
+            await self._commit_soon()
         return cursor
 
     async def fetchall(self, sql: str, params: Sequence[Any] = ()) -> list[aiosqlite.Row]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -62,6 +63,62 @@ class TestOnMessage:
         # before start() captures the loop, messages are dropped, not crashed on
         client._on_message(None, None, _FakeMessage("topic", b"x"))
         assert message_queue.empty()
+
+
+class TestEnqueueBackpressure:
+    def _bounded_client(
+        self, command_queue: asyncio.Queue[Any], maxsize: int
+    ) -> tuple[BeaconMQTTClient, asyncio.Queue[Any]]:
+        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=maxsize)
+        c = BeaconMQTTClient(
+            pw=None,
+            uname=None,
+            command_queue=command_queue,
+            message_queue=queue,
+            host="localhost",
+            port=1883,
+            keepalive=60,
+        )
+        c.client = MagicMock()
+        return c, queue
+
+    def _item(self, payload: str) -> dict[str, Any]:
+        return {"type": "message", "topic": "t", "payload": payload, "timestamp": 0.0}
+
+    def test_oldest_is_dropped_when_queue_full(
+        self, command_queue: asyncio.Queue[Any], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client, queue = self._bounded_client(command_queue, maxsize=2)
+
+        with caplog.at_level(logging.WARNING):
+            for i in range(4):
+                client._enqueue_message(self._item(str(i)))
+
+        # the two oldest were evicted; the newest telemetry survived
+        assert client.dropped_messages == 2
+        assert [queue.get_nowait()["payload"] for _ in range(2)] == ["2", "3"]
+        assert "message queue full" in caplog.text
+
+    def test_drop_warning_is_rate_limited(
+        self, command_queue: asyncio.Queue[Any], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client, _queue = self._bounded_client(command_queue, maxsize=1)
+
+        with caplog.at_level(logging.WARNING):
+            for i in range(5):
+                client._enqueue_message(self._item(str(i)))
+
+        warnings = [r for r in caplog.records if "message queue full" in r.message]
+        assert client.dropped_messages == 4
+        assert len(warnings) == 1  # one heartbeat, not one line per drop
+
+    def test_unbounded_queue_never_drops(
+        self, client: BeaconMQTTClient, message_queue: asyncio.Queue[Any]
+    ) -> None:
+        for i in range(100):
+            client._enqueue_message(self._item(str(i)))
+        assert client.dropped_messages == 0
+        assert message_queue.qsize() == 100
 
 
 class TestConnect:
