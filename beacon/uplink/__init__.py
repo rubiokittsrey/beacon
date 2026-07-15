@@ -1,4 +1,13 @@
 from beacon.uplink.buffer import OutboundBuffer
+from beacon.uplink.http import HTTPUplinkTransport
 from beacon.uplink.records import OutboundRecord, RecordState, SendResult
+from beacon.uplink.transport import UplinkTransport
 
-__all__ = ["OutboundBuffer", "OutboundRecord", "RecordState", "SendResult"]
+__all__ = [
+    "HTTPUplinkTransport",
+    "OutboundBuffer",
+    "OutboundRecord",
+    "RecordState",
+    "SendResult",
+    "UplinkTransport",
+]

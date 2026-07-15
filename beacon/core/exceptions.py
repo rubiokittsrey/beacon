@@ -22,6 +22,13 @@ class StorageNotReadyError(RuntimeError):
         )
 
 
+class UplinkNotReadyError(RuntimeError):
+    """Raised when an uplink component is used before `start()`."""
+
+    def __init__(self, what: str):
+        super().__init__(f"uplink not ready: {what}")
+
+
 class UnknownLookupError(LookupError):
     """Raised when a query uses a filter lookup the table doesn't support."""
 
