@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import signal
 from functools import partial
@@ -9,12 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from paho.mqtt.client import topic_matches_sub
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from beacon.core.config import BeaconConfig, MQTTConfig, load_config
 from beacon.mqtt import BeaconMQTTClient, Message, MQTTBindings, PublisherSpec, SubscriptionSpec
 from beacon.storage import StorageEngine, registry
+from beacon.uplink import Uplink
 from beacon.utils.logging_conf import AsyncLogging, LoggingConfig, new_run_log_dir
+from beacon.utils.serialization import encode_json
 
 
 class Beacon:
@@ -40,6 +41,7 @@ class Beacon:
         # app clients
         self._mqtt_client: BeaconMQTTClient | None = None
         self.storage: StorageEngine | None = None
+        self.uplink: Uplink | None = None
 
         # mqtt dsl bindings + subscription routing table (topic filter -> specs;
         # a list so multiple handlers can bind to the same filter)
@@ -97,6 +99,10 @@ class Beacon:
         if self._mqtt_client:
             await self._mqtt_client.stop()
 
+        # uplink stops before storage: it drains through the same engine
+        if self.uplink:
+            await self.uplink.stop()
+
         if self.storage:
             await self.storage.stop()
 
@@ -125,8 +131,9 @@ class Beacon:
             self._setup_signal_handlers()
 
             # storage comes up before subscriptions so handlers can save from
-            # the very first message
+            # the very first message; the uplink rides that same engine
             await self._start_storage()
+            await self._start_uplink()
             await self._start_mqtt_client()
 
             self._register_mqtt_subscriptions()
@@ -155,6 +162,17 @@ class Beacon:
         storage_cfg = self._config.storage
         self.storage = StorageEngine(storage_cfg.path, commit_delay=storage_cfg.commit_delay)
         await self.storage.start()
+
+    # the uplink rides the shared storage engine (started just before this), so
+    # it is always constructed — even when disabled — so enqueue() raises
+    # UplinkNotEnabledError instead of an AttributeError on a None uplink
+    async def _start_uplink(self) -> None:
+        assert self._config is not None
+        assert self.storage is not None
+
+        self.uplink = Uplink(self.storage, self._config.uplink)
+        if self._config.uplink.enabled:
+            await self.uplink.start()
 
     async def _start_mqtt_client(self) -> None:
         assert self._config is not None
@@ -232,10 +250,7 @@ class Beacon:
                 payload_obj = pub.model.model_validate(payload_obj)
             return payload_obj.model_dump_json()
 
-        if isinstance(payload_obj, BaseModel):
-            return payload_obj.model_dump_json()
-
-        return json.dumps(payload_obj)
+        return encode_json(payload_obj)
 
     def _start_mqtt_message_processor(self) -> None:
         self._tasks.append(asyncio.create_task(self._process_mqtt_messages()))

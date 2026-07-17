@@ -29,6 +29,16 @@ class UplinkNotReadyError(RuntimeError):
         super().__init__(f"uplink not ready: {what}")
 
 
+class UplinkNotEnabledError(RuntimeError):
+    """Raised when enqueuing to the uplink while it is disabled in config."""
+
+    def __init__(self, stream: str):
+        super().__init__(
+            f"uplink is disabled; cannot enqueue to stream '{stream}'. "
+            "Set uplink.enabled: true in config."
+        )
+
+
 class UnknownLookupError(LookupError):
     """Raised when a query uses a filter lookup the table doesn't support."""
 

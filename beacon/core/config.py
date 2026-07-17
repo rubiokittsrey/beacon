@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 from pydantic import BaseModel
@@ -67,10 +67,17 @@ class UplinkHTTPConfig(BaseModel):
 
 
 class UplinkRetryConfig(BaseModel):
-    """Exponential backoff bounds (seconds) between failed send attempts."""
+    """Retry policy for failed send attempts.
+
+    `min_seconds`/`max_seconds` bound the exponential backoff between
+    attempts; `max_attempts` caps how many times a batch is retried before
+    it is buried as poison, so one persistently failing batch cannot block
+    every record behind it forever (0 retries without limit).
+    """
 
     min_seconds: float = 1.0
     max_seconds: float = 60.0
+    max_attempts: int = 10
 
 
 class UplinkBufferConfig(BaseModel):
@@ -91,7 +98,7 @@ class UplinkConfig(BaseModel):
     """Store-and-forward uplink settings; disabled by default."""
 
     enabled: bool = False
-    transport: str = "http"
+    transport: Literal["http"] = "http"
     http: UplinkHTTPConfig = UplinkHTTPConfig()
     buffer: UplinkBufferConfig = UplinkBufferConfig()
 
