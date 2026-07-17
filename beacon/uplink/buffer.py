@@ -56,7 +56,7 @@ class OutboundBuffer:
     async def enqueue(self, stream: str, payload: str) -> OutboundRecord:
         """Persist one outbound record and return it once durable.
 
-        Past `max_records` buffered rows, the oldest pending rows are
+        Past `max_records` undelivered rows, the oldest pending rows are
         dropped to make room — the newest data wins.
         """
         record = OutboundRecord(stream=stream, payload=payload)
@@ -103,6 +103,7 @@ class OutboundBuffer:
     async def bury(self, records: Sequence[OutboundRecord], error: str) -> None:
         """Mark rejected rows `dead`; they are kept for inspection, never resent."""
         await self._resolve(records, RecordState.DEAD, error)
+        await self._trim_dead()
 
     async def pending_count(self) -> int:
         """How many rows await delivery."""
@@ -127,13 +128,14 @@ class OutboundBuffer:
             record.last_error = error
 
     # deletes the oldest pending rows past max_records (newest data wins);
-    # rows the worker holds inflight are never dropped
+    # rows the worker holds inflight are never dropped, and buried `dead`
+    # rows are excluded from the count so poison can't evict live data
     async def _prune_overflow(self) -> None:
         cursor = await self._engine.execute(
             f'DELETE FROM "{_TABLE}" WHERE "seq" IN ('  # noqa: S608
             f'SELECT "seq" FROM "{_TABLE}" WHERE "state" = ? ORDER BY "seq" '
-            f'LIMIT MAX((SELECT COUNT(*) FROM "{_TABLE}") - ?, 0))',
-            [RecordState.PENDING.value, self.max_records],
+            f'LIMIT MAX((SELECT COUNT(*) FROM "{_TABLE}" WHERE "state" != ?) - ?, 0))',
+            [RecordState.PENDING.value, RecordState.DEAD.value, self.max_records],
         )
         dropped = cursor.rowcount
         if dropped <= 0:
@@ -147,6 +149,16 @@ class OutboundBuffer:
                 "uplink buffer full; dropping oldest (%d dropped since start)",
                 self._dropped_total,
             )
+
+    # keeps buried poison for inspection but bounds it at max_records so a run
+    # that meets recurring poison can't grow the db without limit
+    async def _trim_dead(self) -> None:
+        await self._engine.execute(
+            f'DELETE FROM "{_TABLE}" WHERE "seq" IN ('  # noqa: S608
+            f'SELECT "seq" FROM "{_TABLE}" WHERE "state" = ? ORDER BY "seq" '
+            f'LIMIT MAX((SELECT COUNT(*) FROM "{_TABLE}" WHERE "state" = ?) - ?, 0))',
+            [RecordState.DEAD.value, RecordState.DEAD.value, self.max_records],
+        )
 
 
 def _seqs(records: Sequence[OutboundRecord]) -> list[int | None]:
