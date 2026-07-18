@@ -3,12 +3,16 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from beacon.core.config import (
     BeaconConfig,
     LoggingConfig,
     MQTTAuthConfig,
     MQTTConfig,
     StorageConfig,
+    UplinkConfig,
     load_config,
 )
 
@@ -22,6 +26,20 @@ class TestDefaults:
 
     def test_storage_config_defaults(self) -> None:
         assert StorageConfig().path == "beacon.db"
+
+    def test_uplink_config_defaults(self) -> None:
+        uplink = UplinkConfig()
+        assert uplink.enabled is False
+        assert uplink.transport == "http"
+        assert uplink.http.base_url == "http://localhost:8000"
+        assert uplink.http.endpoint == "/ingest"
+        assert uplink.http.timeout == 10.0
+        assert uplink.buffer.batch_size == 50
+        assert uplink.buffer.flush_interval == 1.0
+        assert uplink.buffer.max_records == 10_000
+        assert uplink.buffer.retry.min_seconds == 1.0
+        assert uplink.buffer.retry.max_seconds == 60.0
+        assert uplink.buffer.retry.max_attempts == 10
 
     def test_mqtt_config_defaults(self) -> None:
         mqtt = MQTTConfig()
@@ -100,3 +118,45 @@ class TestLoadConfig:
         path = tmp_path / "list.yaml"
         path.write_text("- a\n- b\n", encoding="utf-8")
         assert load_config(path) == BeaconConfig()
+
+
+class TestUplinkConfig:
+    def test_transport_rejects_unknown_value(self) -> None:
+        with pytest.raises(ValidationError):
+            UplinkConfig(transport="mqtt")
+
+    def test_uplink_yaml_is_parsed(self, tmp_path: Path) -> None:
+        path = tmp_path / "beacon.yaml"
+        path.write_text(
+            "uplink:\n"
+            "  enabled: true\n"
+            "  http:\n"
+            "    base_url: https://ingest.example\n"
+            "    endpoint: /v1/records\n"
+            "    timeout: 3.5\n"
+            "  buffer:\n"
+            "    batch_size: 25\n"
+            "    max_records: 500\n"
+            "    retry:\n"
+            "      min_seconds: 2\n"
+            "      max_seconds: 30\n"
+            "      max_attempts: 4\n",
+            encoding="utf-8",
+        )
+
+        uplink = load_config(path).uplink
+
+        assert uplink.enabled is True
+        assert uplink.http.base_url == "https://ingest.example"
+        assert uplink.http.endpoint == "/v1/records"
+        assert uplink.http.timeout == 3.5
+        assert uplink.buffer.batch_size == 25
+        assert uplink.buffer.max_records == 500
+        assert uplink.buffer.retry.min_seconds == 2.0
+        assert uplink.buffer.retry.max_seconds == 30.0
+        assert uplink.buffer.retry.max_attempts == 4
+
+    def test_uplink_defaults_when_absent(self, tmp_path: Path) -> None:
+        path = tmp_path / "beacon.yaml"
+        path.write_text("mqtt:\n  host: only-host\n", encoding="utf-8")
+        assert load_config(path).uplink == UplinkConfig()
