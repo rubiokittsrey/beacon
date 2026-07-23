@@ -7,6 +7,7 @@ An async Python framework for building MQTT-connected services. Beacon handles t
 - **Decorator DSL** — bind handlers to topic filters (wildcards `+`/`#` supported) with `@app.bindings.subscribe(...)` and register periodic publishers with `@app.bindings.publisher(..., every=...)`
 - **Typed payloads** — declare a Pydantic model per binding with `model=`; inbound payloads are validated before your handler runs (invalid ones are logged and dropped), outbound ones are serialized with `model_dump_json()`
 - **Pydantic-native storage** — subclass `Table` and the same model validates payloads *and* defines a SQLite schema; an async active-record API (`save`/`get`/`filter`) with Django-style lookups over aiosqlite (WAL, additive migrations)
+- **Store-and-forward uplink** — `await app.uplink.enqueue(...)` buffers a message durably and returns; a background worker POSTs batches to your ingest endpoint, retries with exponential backoff while the network is down, and buries poison instead of blocking behind it
 - **Resilient MQTT client** — built on paho-mqtt with background connection retry and backoff; starting before the broker is up is fine
 - **Bounded under burst** — capped concurrent handlers, a bounded inbound queue, and drop-oldest shedding at the edge; storage group-commits so a burst of writes shares one fsync
 - **YAML configuration** — Pydantic-validated, with sane defaults when the file is missing
@@ -141,6 +142,51 @@ storage:
 - **Schema** — created on start with `CREATE TABLE IF NOT EXISTS`; new model fields become `ALTER TABLE ... ADD COLUMN` (additive migrations only), and every value is parameterized. v1 is flat tables — no relations or joins.
 - **Commits** — writes are group-committed: saves landing within `storage.commit_delay` (default 10ms) share one commit, so a burst of handler saves pays one fsync instead of one each. `await save()` still returns only after its commit is durable.
 
+## Uplink
+
+An edge device is offline sooner or later, and telemetry dropped during the outage is gone for good. The uplink is Beacon's answer: `enqueue()` writes the message to a durable buffer and returns as soon as that commit lands, and a background worker delivers it whenever the network allows. Nothing is forwarded implicitly — data enters by explicit call.
+
+```python
+@app.bindings.subscribe("telemetry/air/+", qos=1, model=AirReading)
+async def on_air(msg: Message[AirReading]) -> None:
+    await app.uplink.enqueue("air", msg.data)  # durable once this returns
+```
+
+Enable it and point it at your ingest endpoint:
+
+```yaml
+uplink:
+  enabled: true
+  http:
+    base_url: https://ingest.example.com
+    endpoint: /v1/telemetry
+    headers:
+      Authorization: Bearer ...
+```
+
+The worker claims up to `batch_size` records in FIFO order and POSTs them as one batch:
+
+```json
+{"records": [{"record_id": "...", "stream": "air", "payload": "{...}", "created_at": "..."}]}
+```
+
+- **Batch outcomes** — the whole batch shares the response's fate: 2xx acks it (rows deleted), 5xx / timeouts / connection errors nack it for retry, and 4xx buries it as poison, kept in the buffer as `dead` for inspection but never resent (429 is the exception — it retries).
+- **Backoff** — a failed send backs the worker off exponentially from `retry.min_seconds` to `retry.max_seconds`. With a single claimer, retrying an unreachable endpoint sooner only burns it. After `retry.max_attempts` tries a batch is buried, so one bad record can't block every record behind it forever.
+- **Exactly-once, server-side** — `record_id` is a UUID idempotency key. A batch resent after an ambiguous failure (the send landed, the response didn't) arrives with the same ids, so an ingest server that dedupes on them applies it once.
+- **Bounded** — past `buffer.max_records` undelivered rows the oldest *pending* records are dropped, newest data wins; rows the worker holds inflight are never dropped, and buried rows don't count against the cap. Drops are counted and logged on a rate limit.
+- **Crash-safe** — the buffer lives in the app's SQLite database, so a record that `enqueue()` returned survives a kill. Records left inflight by a crash or a mid-send SIGINT are recovered to pending on the next start; shutdown does no flush heroics because it doesn't need any.
+- **Disabled by default** — enqueuing while `uplink.enabled` is false raises `UplinkNotEnabledError` rather than silently dropping the message.
+
+`scripts/sim_ingest_server.py` is a local stand-in for the cloud: it accepts batches, dedupes on `record_id`, and can misbehave on demand.
+
+```bash
+poetry run python scripts/sim_ingest_server.py --state seen.json   # terminal 1
+poetry run python scripts/collector.py                             # terminal 2 (uplink.enabled: true)
+poetry run python scripts/sim_air_sensor.py                        # terminal 3
+```
+
+Kill the ingest server and the collector keeps accepting readings — they pile up in the `outbound` table while the worker backs off. Start it again and the backlog drains, with `GET /stats` reporting duplicates as 0. `--fail-rate 0.5` shows retry under a flaky link, and `--reject air` shows a poison batch being buried.
+
 ## How it works
 
 Two asyncio queues connect the app to the MQTT client, which runs alongside paho's network thread:
@@ -170,8 +216,16 @@ beacon/
 │   ├── query.py        # Django-style lookup + WHERE/ORDER BY builders
 │   ├── ddl.py          # model -> column specs + DDL generation
 │   └── engine.py       # aiosqlite engine: lifecycle, codecs, execution
+├── uplink/
+│   ├── records.py      # OutboundRecord row + SendResult
+│   ├── buffer.py       # durable FIFO: enqueue/claim/ack/nack/bury
+│   ├── transport.py    # UplinkTransport protocol (seam for other transports)
+│   ├── http.py         # aiohttp POST transport; status -> batch outcome
+│   ├── worker.py       # claim -> send -> resolve drain loop with backoff
+│   └── uplink.py       # Uplink facade owning buffer + transport + worker
 └── utils/
-    └── logging_conf.py # async logging with per-run log dirs
+    ├── logging_conf.py # async logging with per-run log dirs
+    └── serialization.py # JSON encoding shared by publishers and the uplink
 ```
 
 A runnable tour of the full API lives in [`scripts/usage_guide.py`](scripts/usage_guide.py):

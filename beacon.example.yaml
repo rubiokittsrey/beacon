@@ -17,3 +17,20 @@ logging:
 storage:
   path: beacon.db     # sqlite file; ":memory:" for an ephemeral database
   commit_delay: 0.01  # group-commit window (s): writes within it share one commit
+
+uplink:
+  enabled: false      # off by default; enqueuing while off raises
+  transport: http
+  http:
+    base_url: http://localhost:8000
+    endpoint: /ingest
+    headers: {}       # e.g. {Authorization: "Bearer ..."}
+    timeout: 10.0     # per-request total timeout (s)
+  buffer:
+    batch_size: 50       # records claimed per send
+    flush_interval: 1.0  # idle poll interval (s)
+    max_records: 10000   # buffered cap; past it the oldest pending are dropped
+    retry:
+      min_seconds: 1.0   # backoff floor after a failed send
+      max_seconds: 60.0  # backoff ceiling
+      max_attempts: 10   # tries before a batch is buried as poison (0 = forever)
