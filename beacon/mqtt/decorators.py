@@ -1,15 +1,12 @@
-from __future__ import annotations
-
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from numbers import Real
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+from pydantic import BaseModel
 
 from beacon.core.exceptions import UnsupportedIntervalError
 from beacon.mqtt.messages import Message
-
-if TYPE_CHECKING:
-    from pydantic import BaseModel
 
 # note: keep these aliases narrow and explicit for type checkers
 Handler = Callable[[Message[Any]], Coroutine[Any, Any, None]]

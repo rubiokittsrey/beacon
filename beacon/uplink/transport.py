@@ -1,11 +1,7 @@
-from __future__ import annotations
+from collections.abc import Sequence
+from typing import Protocol
 
-from typing import TYPE_CHECKING, Protocol
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from beacon.uplink.records import OutboundRecord, SendResult
+from beacon.uplink.records import OutboundRecord, SendResult
 
 
 class UplinkTransport(Protocol):

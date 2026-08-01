@@ -12,8 +12,6 @@ one-cycle-at-a-time commit state.
 All cases are marked `stress` and can be skipped with `-m "not stress"`.
 """
 
-from __future__ import annotations
-
 import asyncio
 import time
 from pathlib import Path

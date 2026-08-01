@@ -1,14 +1,11 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import datetime
 from types import NoneType, UnionType
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+from typing import Any, Union, get_args, get_origin
+
+from pydantic import BaseModel
 
 from beacon.storage.fields import COLUMN_METADATA_KEY
-
-if TYPE_CHECKING:
-    from pydantic import BaseModel
 
 # python type -> sqlite storage class; order matters (bool before int,
 # since bool subclasses int) and subclasses map through issubclass

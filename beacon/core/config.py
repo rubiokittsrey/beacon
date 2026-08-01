@@ -1,13 +1,9 @@
-from __future__ import annotations
-
 import logging
-from typing import TYPE_CHECKING, Literal
+from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class MQTTAuthConfig(BaseModel):

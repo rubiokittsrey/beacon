@@ -1,18 +1,11 @@
-from __future__ import annotations
-
+from collections.abc import Sequence
 from http import HTTPStatus
-from typing import TYPE_CHECKING
 
 import aiohttp
 
+from beacon.core.config import UplinkHTTPConfig
 from beacon.core.exceptions import UplinkNotReadyError
-from beacon.uplink.records import SendResult
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from beacon.core.config import UplinkHTTPConfig
-    from beacon.uplink.records import OutboundRecord
+from beacon.uplink.records import OutboundRecord, SendResult
 
 # response bodies are truncated to this many chars in SendResult.detail
 _DETAIL_LIMIT = 200

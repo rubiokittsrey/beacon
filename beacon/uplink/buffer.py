@@ -1,15 +1,9 @@
-from __future__ import annotations
-
 import logging
 import time
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
 
+from beacon.storage import StorageEngine
 from beacon.uplink.records import OutboundRecord, RecordState
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from beacon.storage import StorageEngine
 
 # rate limit for the buffer-full warning so sustained overflow logs a
 # heartbeat with a running total instead of one line per drop

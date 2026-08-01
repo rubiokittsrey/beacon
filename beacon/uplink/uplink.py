@@ -1,20 +1,16 @@
-from __future__ import annotations
-
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from beacon.core.config import UplinkConfig
 from beacon.core.exceptions import UplinkNotEnabledError
+from beacon.storage import StorageEngine
 from beacon.uplink.buffer import OutboundBuffer
 from beacon.uplink.http import HTTPUplinkTransport
+from beacon.uplink.records import OutboundRecord
+from beacon.uplink.transport import UplinkTransport
 from beacon.uplink.worker import UplinkWorker
 from beacon.utils.serialization import encode_json
-
-if TYPE_CHECKING:
-    from beacon.core.config import UplinkConfig
-    from beacon.storage import StorageEngine
-    from beacon.uplink.records import OutboundRecord
-    from beacon.uplink.transport import UplinkTransport
 
 
 class Uplink:

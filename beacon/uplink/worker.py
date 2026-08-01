@@ -1,17 +1,12 @@
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
 
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from beacon.core.config import UplinkBufferConfig
-    from beacon.uplink.buffer import OutboundBuffer
-    from beacon.uplink.records import OutboundRecord, SendResult
-    from beacon.uplink.transport import UplinkTransport
+from beacon.core.config import UplinkBufferConfig
+from beacon.uplink.buffer import OutboundBuffer
+from beacon.uplink.records import OutboundRecord, SendResult
+from beacon.uplink.transport import UplinkTransport
 
 
 class UplinkWorker:

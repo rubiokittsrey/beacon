@@ -1,26 +1,20 @@
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, cast
+from pathlib import Path
+from typing import Any, cast
 
 import aiosqlite
 from pydantic import BaseModel
 
 from beacon.core.exceptions import StorageNotReadyError
-from beacon.storage.ddl import columns_for, create_index_sql, create_table_sql
+from beacon.storage.ddl import ColumnSpec, columns_for, create_index_sql, create_table_sql
 from beacon.storage.query import build_order_by, build_where
 from beacon.storage.table import Table, registry
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
-    from pathlib import Path
-
-    from beacon.storage.ddl import ColumnSpec
 
 
 # TEXT columns that don't hold plain strings (or ISO datetimes, or str

@@ -243,6 +243,13 @@ uv run ruff check .    # lint
 uv run mypy beacon     # type check
 ```
 
+To see what a live app's tasks are doing — a stuck handler, the uplink worker mid-backoff — Python 3.14's asyncio introspection CLI attaches to the running process by pid:
+
+```bash
+uv run python -m asyncio ps <pid>      # flat table of tasks and what they await
+uv run python -m asyncio pstree <pid>  # the same as an await tree
+```
+
 ## License
 
 MIT

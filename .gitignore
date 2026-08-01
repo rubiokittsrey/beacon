@@ -30,7 +30,6 @@ dist/
 *.egg-info/
 .eggs/
 
-scripts/
 
 .coverage
 .pytest_cache/

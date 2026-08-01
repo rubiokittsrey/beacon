@@ -6,7 +6,7 @@ authors = [
     {name = "rubiokittsrey",email = "kittsreyrubio@gmail.com"}
 ]
 license = {text = "MIT"}
-requires-python = ">=3.14.3"
+requires-python = ">=3.14"
 dependencies = [
     "paho-mqtt (>=2.1.0,<3.0.0)",
     "aiohttp (>=3.13.3,<4.0.0)",
@@ -48,8 +48,8 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py313"
-
+# target-version is inferred from requires-python; with 3.14's deferred
+# annotations, typing-only imports no longer need TYPE_CHECKING guards
 line-length = 100
 fix = true
 
@@ -156,6 +156,9 @@ ignore = [
     "FIX002",  # Line contains TODO
     "COM812",  # Trailing comma missing (conflicts with formatter)
     "ISC001",  # Implicit string concatenation (conflicts with formatter)
+    "TC001",   # TYPE_CHECKING guards are ceremony under 3.14 deferred annotations;
+    "TC002",   # kept only where an import is genuinely circular (see storage/table.py)
+    "TC003",
 ]
 
 # Allow fix for all enabled rules (when `--fix` is provided)
@@ -176,8 +179,6 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
     "INP001",  # Implicit namespace package (tests need no __init__.py)
     "SLF001",  # Private member access (tests exercise internals)
     "S106",    # Hardcoded password (test fixtures use fake credentials)
-    "TC001",   # Move first-party import to type-checking block (noise in tests)
-    "TC003",   # Move stdlib import to type-checking block (noise in tests)
     "ASYNC110",# Polling loops are intentional in async tests
 ]
 "conftest.py" = ["ARG001"]  # Unused function argument (fixtures)
@@ -232,6 +233,11 @@ mark-parentheses = true
 # Prefer double quotes
 docstring-quotes = "double"
 inline-quotes = "double"
+
+[tool.ruff.lint.flake8-type-checking]
+# pydantic resolves field annotations when the class is created, so their
+# imports must stay at runtime
+runtime-evaluated-base-classes = ["pydantic.BaseModel", "beacon.storage.table.Table"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 # Ban certain imports

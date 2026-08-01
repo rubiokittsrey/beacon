@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable

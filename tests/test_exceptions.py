@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from beacon.core.exceptions import UnsupportedIntervalError
 
 

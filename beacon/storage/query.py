@@ -1,14 +1,8 @@
-from __future__ import annotations
-
-from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Iterable, Mapping
+from typing import Any
 
 from beacon.core.exceptions import UnknownLookupError
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
-
-    from beacon.storage.ddl import ColumnSpec
+from beacon.storage.ddl import ColumnSpec
 
 # Django-style lookup suffix -> SQL comparison operator. A bare field name
 # (no `__suffix`) is equality; `field=None` becomes `IS NULL` on `eq`/`ne`.

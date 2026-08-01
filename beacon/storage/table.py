@@ -1,17 +1,14 @@
-from __future__ import annotations
-
 import re
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from pydantic import BaseModel
 
 from beacon.core.exceptions import StorageNotReadyError, TableDefinitionError
-from beacon.storage.ddl import columns_for
+from beacon.storage.ddl import ColumnSpec, columns_for
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from beacon.storage.ddl import ColumnSpec
+    # runtime import would be circular: engine.py imports Table and registry
     from beacon.storage.engine import StorageEngine
 
 # CamelCase -> snake_case, keeping acronyms together (HTTPServerLog -> http_server_log)
@@ -68,7 +65,7 @@ class Table(BaseModel):
     """
 
     __tablename__: ClassVar[str]
-    _engine: ClassVar[StorageEngine | None] = None
+    _engine: ClassVar["StorageEngine | None"] = None
 
     @classmethod
     def bind_engine(cls, engine: StorageEngine) -> None:

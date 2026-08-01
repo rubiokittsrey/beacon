@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 from beacon.storage import StorageEngine, registry
