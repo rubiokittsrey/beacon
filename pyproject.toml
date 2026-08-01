@@ -1,11 +1,14 @@
 [project]
 name = "beacon"
-version = "0.1.0"
-description = ""
+version = "0.2.0"
+description = "An async Python framework for building MQTT-connected edge services"
 authors = [
-    {name = "rubiokittsrey",email = "kittsreyrubio@gmail.com"}
+    {name = "Kitts Rey Rubio",email = "contact@kittsreyrubio.dev"}
 ]
 license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+]
 requires-python = ">=3.14"
 dependencies = [
     "paho-mqtt (>=2.1.0,<3.0.0)",
