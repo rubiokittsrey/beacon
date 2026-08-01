@@ -145,21 +145,69 @@ async def test_retryable_batch_buried_once_attempts_exhausted(tmp_path: Path) ->
         await engine.stop()
 
 
-# ------------------------------------------------------------ _exhausted / _backoff units
+async def test_outage_never_spends_attempts(tmp_path: Path) -> None:
+    buf, engine = await _buffer(tmp_path)
+    try:
+        record = await buf.enqueue("s", "1")
+        # the endpoint never answered; however long that lasts it must not
+        # push the record toward burial, so attempts stays put
+        worker = UplinkWorker(buf, FakeTransport(), _config(max_attempts=2))
+        offline = SendResult(ok=False, retryable=True, reached_server=False, detail="offline")
+
+        for _ in range(10):
+            await worker._resolve(await buf.claim(1), offline)
+
+        assert await buf.pending_count() == 1
+        assert await engine.count(OutboundRecord, {"state": RecordState.DEAD}) == 0
+        [row] = await engine.fetch(OutboundRecord, {})
+        assert row.attempts == 0
+        assert row.last_error == "offline"  # still recorded, just not charged
+        assert record.seq == row.seq
+    finally:
+        await engine.stop()
+
+
+async def test_only_exhausted_records_are_buried(tmp_path: Path) -> None:
+    buf, engine = await _buffer(tmp_path)
+    try:
+        old = await buf.enqueue("s", "old")
+        await buf.nack([old], "e")  # one server-answered failure already spent
+        fresh = await buf.enqueue("s", "fresh")
+
+        # both are claimed together, but only `old` has spent its budget —
+        # `fresh` has never been tried and must survive the batch's burial
+        worker = UplinkWorker(buf, FakeTransport(), _config(max_attempts=2))
+        claimed = await buf.claim(10)
+        assert len(claimed) == 2
+        backoff = await worker._resolve(claimed, SendResult(ok=False, retryable=True, detail="503"))
+
+        assert backoff == 0.0  # min_seconds is 0.0 in the test config
+        dead = await engine.fetch(OutboundRecord, {"state": RecordState.DEAD})
+        assert [row.payload for row in dead] == ["old"]
+        pending = await engine.fetch(OutboundRecord, {"state": RecordState.PENDING})
+        assert [row.payload for row in pending] == ["fresh"]
+        assert old.seq != fresh.seq
+    finally:
+        await engine.stop()
+
+
+# ------------------------------------------------------------ _is_exhausted / _backoff units
 
 
 async def test_exhausted_respects_ceiling(tmp_path: Path) -> None:
     buf, engine = await _buffer(tmp_path)
     try:
         worker = UplinkWorker(buf, FakeTransport(), _config(max_attempts=3))
-        assert worker._exhausted([OutboundRecord(stream="s", payload="p", attempts=1)]) is False
-        assert worker._exhausted([OutboundRecord(stream="s", payload="p", attempts=2)]) is True
-        # the highest attempt count in the batch drives the decision
+        assert worker._is_exhausted(OutboundRecord(stream="s", payload="p", attempts=1)) is False
+        assert worker._is_exhausted(OutboundRecord(stream="s", payload="p", attempts=2)) is True
+        # each record is judged on its own count, not the batch's highest
         batch = [
             OutboundRecord(stream="s", payload="p", attempts=0),
             OutboundRecord(stream="s", payload="p", attempts=2),
         ]
-        assert worker._exhausted(batch) is True
+        exhausted, remaining = worker._partition_exhausted(batch)
+        assert [r.attempts for r in exhausted] == [2]
+        assert [r.attempts for r in remaining] == [0]
     finally:
         await engine.stop()
 
@@ -168,7 +216,8 @@ async def test_max_attempts_zero_never_exhausts(tmp_path: Path) -> None:
     buf, engine = await _buffer(tmp_path)
     try:
         worker = UplinkWorker(buf, FakeTransport(), _config(max_attempts=0))
-        assert worker._exhausted([OutboundRecord(stream="s", payload="p", attempts=9999)]) is False
+        record = OutboundRecord(stream="s", payload="p", attempts=9999)
+        assert worker._is_exhausted(record) is False
     finally:
         await engine.stop()
 
@@ -239,6 +288,30 @@ async def test_run_buries_poison_then_keeps_draining(tmp_path: Path) -> None:
         await _run_until(worker, _no_pending)
 
         assert await engine.count(OutboundRecord, {"state": RecordState.DEAD}) == 2
+    finally:
+        await engine.stop()
+
+
+async def test_run_survives_sustained_outage(tmp_path: Path) -> None:
+    buf, engine = await _buffer(tmp_path)
+    try:
+        for i in range(3):
+            await buf.enqueue("s", str(i))
+        # the link stays down for many more cycles than max_attempts allows;
+        # every record must still be waiting for the link to come back
+        transport = FakeTransport()
+        transport.default = SendResult(
+            ok=False, retryable=True, reached_server=False, detail="offline"
+        )
+        worker = UplinkWorker(buf, transport, _config(max_attempts=2))
+
+        async def _retried_often() -> bool:
+            return transport.calls >= 8
+
+        await _run_until(worker, _retried_often)
+
+        assert await buf.pending_count() == 3
+        assert await engine.count(OutboundRecord, {"state": RecordState.DEAD}) == 0
     finally:
         await engine.stop()
 

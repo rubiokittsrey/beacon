@@ -95,6 +95,8 @@ async def test_5xx_is_retryable() -> None:
         result = await transport.send([_record()])
         assert result.ok is False
         assert result.retryable is True
+        # the server answered, so this failure counts against the records
+        assert result.reached_server is True
 
 
 async def test_connection_error_is_retryable() -> None:
@@ -102,6 +104,8 @@ async def test_connection_error_is_retryable() -> None:
         result = await transport.send([_record()])
         assert result.ok is False
         assert result.retryable is True
+        # nothing answered: an outage, which costs the records no attempts
+        assert result.reached_server is False
 
 
 async def test_timeout_is_retryable() -> None:
@@ -114,6 +118,7 @@ async def test_timeout_is_retryable() -> None:
         result = await transport.send([_record()])
         assert result.ok is False
         assert result.retryable is True
+        assert result.reached_server is False
 
 
 # ------------------------------------------------------------ request shape

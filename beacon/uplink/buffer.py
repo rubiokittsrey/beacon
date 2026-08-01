@@ -96,9 +96,20 @@ class OutboundBuffer:
             _seqs(records),
         )
 
-    async def nack(self, records: Sequence[OutboundRecord], error: str) -> None:
-        """Return failed rows to `pending` for retry, recording the error."""
-        await self._resolve(records, RecordState.PENDING, error)
+    async def nack(
+        self,
+        records: Sequence[OutboundRecord],
+        error: str,
+        *,
+        count_attempt: bool = True,
+    ) -> None:
+        """Return failed rows to `pending` for retry, recording the error.
+
+        `count_attempt=False` retries without charging the rows an attempt —
+        used when the send never reached the server, so `attempts` counts
+        only the failures the server actually answered for.
+        """
+        await self._resolve(records, RecordState.PENDING, error, count_attempt=count_attempt)
 
     async def bury(self, records: Sequence[OutboundRecord], error: str) -> None:
         """Mark rejected rows `dead`; they are kept for inspection, never resent."""
@@ -114,17 +125,21 @@ class OutboundBuffer:
         records: Sequence[OutboundRecord],
         state: RecordState,
         error: str,
+        *,
+        count_attempt: bool = True,
     ) -> None:
         if not records:
             return
+        attempts = '"attempts" + 1' if count_attempt else '"attempts"'
         await self._engine.execute(
-            f'UPDATE "{_TABLE}" SET "state" = ?, "attempts" = "attempts" + 1, '  # noqa: S608
+            f'UPDATE "{_TABLE}" SET "state" = ?, "attempts" = {attempts}, '  # noqa: S608
             f'"last_error" = ? WHERE "seq" IN ({_placeholders(records)})',
             [state.value, error, *_seqs(records)],
         )
         for record in records:
             record.state = state
-            record.attempts += 1
+            if count_attempt:
+                record.attempts += 1
             record.last_error = error
 
     # deletes the oldest pending rows past max_records (newest data wins);

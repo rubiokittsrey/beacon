@@ -55,8 +55,14 @@ class SendResult(BaseModel, frozen=True):
 
     `ok=True` acks the whole batch; `ok=False, retryable=True` nacks it
     for backoff and retry; `ok=False, retryable=False` buries it as poison.
+
+    `reached_server` reports whether the endpoint answered at all. A
+    retryable failure that never reached it is an outage — it says nothing
+    about the records, so it costs them no attempts. Transports set it
+    `False` only for that case; everything else means a verdict came back.
     """
 
     ok: bool
     retryable: bool = False
+    reached_server: bool = True
     detail: str | None = None

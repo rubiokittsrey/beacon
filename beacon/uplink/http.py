@@ -83,4 +83,11 @@ class HTTPUplinkTransport:
                     ok=False, retryable=retryable, detail=f"http {resp.status}: {text}"
                 )
         except (aiohttp.ClientError, TimeoutError) as exc:
-            return SendResult(ok=False, retryable=True, detail=f"{type(exc).__name__}: {exc}")
+            # no response at all: the link is down, which is no verdict on these
+            # records — reached_server=False keeps it off their attempt budget
+            return SendResult(
+                ok=False,
+                retryable=True,
+                reached_server=False,
+                detail=f"{type(exc).__name__}: {exc}",
+            )

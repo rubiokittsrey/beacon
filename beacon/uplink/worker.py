@@ -25,6 +25,11 @@ class UplinkWorker:
     means retrying sooner only burns it. When idle the worker polls every
     `flush_interval`. Records left inflight at shutdown stay durable and are
     recovered to pending on the next start.
+
+    `max_attempts` is spent per record and only on failures the server
+    answered for, so an offline stretch of any length costs a record
+    nothing: burial is reserved for a batch the server keeps rejecting,
+    which is the only case that can block the queue behind it.
     """
 
     def __init__(
@@ -74,28 +79,58 @@ class UplinkWorker:
             await self._buffer.ack(batch)
             self._failures = 0
             return 0.0
-        if result.retryable:
-            if self._exhausted(batch):
-                reason = f"buried after {self._retry.max_attempts} attempts: {detail}"
-                await self._buffer.bury(batch, reason)
-                self._logger.warning("uplink buried %d exhausted record(s): %s", len(batch), detail)
-                self._failures = 0
-                return 0.0
-            await self._buffer.nack(batch, detail)
+
+        if not result.retryable:
+            # poison: rejected outright, not a transport failure — bury and keep draining
+            await self._buffer.bury(batch, detail)
+            self._logger.warning("uplink buried %d poison record(s): %s", len(batch), detail)
+            self._failures = 0
+            return 0.0
+
+        # the endpoint never answered, so the failure is about the link, not
+        # about these records — retry them without spending their attempts.
+        # charging an outage would bury good data once the backoff ladder ran
+        # long enough, which is precisely what the buffer exists to prevent
+        if not result.reached_server:
+            await self._buffer.nack(batch, detail, count_attempt=False)
             self._failures += 1
             return self._backoff()
-        # poison: rejected outright, not a transport failure — bury and keep draining
-        await self._buffer.bury(batch, detail)
-        self._logger.warning("uplink buried %d poison record(s): %s", len(batch), detail)
+
+        exhausted, remaining = self._partition_exhausted(batch)
+        if exhausted:
+            reason = f"buried after {self._retry.max_attempts} attempts: {detail}"
+            await self._buffer.bury(exhausted, reason)
+            self._logger.warning(
+                "uplink buried %d exhausted record(s): %s", len(exhausted), detail
+            )
+        if remaining:
+            await self._buffer.nack(remaining, detail)
+            self._failures += 1
+            return self._backoff()
         self._failures = 0
         return 0.0
 
-    def _exhausted(self, batch: Sequence[OutboundRecord]) -> bool:
-        # attempts counts prior failed sends; this send failed too, so a nack
-        # would push the batch to attempts+1 — bury once that hits the ceiling
+    def _partition_exhausted(
+        self, batch: Sequence[OutboundRecord]
+    ) -> tuple[list[OutboundRecord], list[OutboundRecord]]:
+        """Split a failed batch into records out of attempts and records still owed a retry.
+
+        Resolving per record rather than per batch keeps a record claimed
+        alongside an older one from being buried on attempts it never spent.
+        """
+        exhausted: list[OutboundRecord] = []
+        remaining: list[OutboundRecord] = []
+        for record in batch:
+            target = exhausted if self._is_exhausted(record) else remaining
+            target.append(record)
+        return exhausted, remaining
+
+    def _is_exhausted(self, record: OutboundRecord) -> bool:
+        # attempts counts prior sends the server answered for; this send failed
+        # too, so a nack would push the record to attempts+1 — bury at the ceiling
         if self._retry.max_attempts <= 0:
             return False
-        return max(record.attempts for record in batch) + 1 >= self._retry.max_attempts
+        return record.attempts + 1 >= self._retry.max_attempts
 
     # returns a batch left in hand by a failed cycle to pending so it is not
     # stranded inflight until the next process restart; best-effort

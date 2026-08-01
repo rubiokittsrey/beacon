@@ -33,4 +33,5 @@ uplink:
     retry:
       min_seconds: 1.0   # backoff floor after a failed send
       max_seconds: 60.0  # backoff ceiling
-      max_attempts: 10   # tries before a batch is buried as poison (0 = forever)
+      max_attempts: 10   # server-rejected tries before a record is buried (0 = forever);
+                         # sends that never reach the server never count

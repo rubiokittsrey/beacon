@@ -70,9 +70,11 @@ class UplinkRetryConfig(BaseModel):
     """Retry policy for failed send attempts.
 
     `min_seconds`/`max_seconds` bound the exponential backoff between
-    attempts; `max_attempts` caps how many times a batch is retried before
-    it is buried as poison, so one persistently failing batch cannot block
-    every record behind it forever (0 retries without limit).
+    attempts; `max_attempts` caps how many times a record the server keeps
+    rejecting is retried before it is buried, so one persistently failing
+    batch cannot block every record behind it forever (0 retries without
+    limit). Sends that never reach the server cost no attempts, so an
+    outage never buries anything however long it lasts.
     """
 
     min_seconds: float = 1.0
