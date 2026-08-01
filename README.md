@@ -22,7 +22,7 @@ An async Python framework for building MQTT-connected services. Beacon handles t
 ## Installation
 
 ```bash
-poetry install
+uv sync
 ```
 
 ## Quickstart
@@ -181,9 +181,9 @@ The worker claims up to `batch_size` records in FIFO order and POSTs them as one
 `scripts/sim_ingest_server.py` is a local stand-in for the cloud: it accepts batches, dedupes on `record_id`, and can misbehave on demand.
 
 ```bash
-poetry run python scripts/sim_ingest_server.py --state seen.json   # terminal 1
-poetry run python scripts/collector.py                             # terminal 2 (uplink.enabled: true)
-poetry run python scripts/sim_air_sensor.py                        # terminal 3
+uv run python scripts/sim_ingest_server.py --state seen.json   # terminal 1
+uv run python scripts/collector.py                             # terminal 2 (uplink.enabled: true)
+uv run python scripts/sim_air_sensor.py                        # terminal 3
 ```
 
 Kill the ingest server and the collector keeps accepting readings — they pile up in the `outbound` table while the worker backs off. Start it again and the backlog drains, with `GET /stats` reporting duplicates as 0. `--fail-rate 0.5` shows retry under a flaky link, and `--reject air` shows a poison batch being buried.
@@ -232,15 +232,15 @@ beacon/
 A runnable tour of the full API lives in [`scripts/usage_guide.py`](scripts/usage_guide.py):
 
 ```bash
-poetry run python scripts/usage_guide.py
+uv run python scripts/usage_guide.py
 ```
 
 ## Development
 
 ```bash
-poetry run pytest          # run the test suite
-poetry run ruff check .    # lint
-poetry run mypy beacon     # type check
+uv run pytest          # run the test suite
+uv run ruff check .    # lint
+uv run mypy beacon     # type check
 ```
 
 ## License
