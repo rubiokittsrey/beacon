@@ -3,13 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# poetry virtual environment
+# virtual environment (uv.lock is tracked on purpose)
 .venv/
 
 # environment variables file (if you use one)
 .env
-
-# poetry.lock
 
 # ide files
 .vscode/
@@ -21,8 +19,14 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# logs
+# logs (a per-run directory each start)
+logs/
 *.log
+
+# sqlite databases, including the default storage path, plus WAL sidecars
+*.db
+*.db-wal
+*.db-shm
 
 # build / distribution directories
 build/
@@ -30,6 +34,8 @@ dist/
 *.egg-info/
 .eggs/
 
-
+# tool caches / coverage
 .coverage
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
