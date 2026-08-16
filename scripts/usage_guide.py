@@ -95,6 +95,24 @@ async def publish_heartbeat() -> dict[str, Any]:
     }
 
 
+# no `every`: nothing schedules this one — awaiting it publishes with the
+# topic, qos, retain, and model declared right here
+@app.bindings.publisher("devices/announce", qos=1)
+async def announce() -> dict[str, Any]:
+    return {"device": app.name, "state": "online"}
+
+
+# publishes are queued for the mqtt client, so this works before start() —
+# they would go out once it connects (here they are drained to show them)
+async def _publish_demo() -> None:
+    await announce()
+    await app.publish("devices/status", {"up": True}, qos=1)  # ad-hoc, any topic
+    queued = [app.mqtt_command_queue.get_nowait() for _ in range(2)]
+    print("[3] queued publishes:", [(c["topic"], c["payload"]) for c in queued])
+
+
+asyncio.run(_publish_demo())
+
 print("[3] subscriptions:", [s.topic for s in app.bindings.subscriptions])
 print("[3] publishers:", [p.topic for p in app.bindings.publishers])
 

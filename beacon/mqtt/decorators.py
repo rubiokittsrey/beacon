@@ -1,16 +1,31 @@
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
+from functools import wraps
 from numbers import Real
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
-from beacon.core.exceptions import UnsupportedIntervalError
+from beacon.core.exceptions import PublisherNotBoundError, UnsupportedIntervalError
 from beacon.mqtt.messages import Message
 
 # note: keep these aliases narrow and explicit for type checkers
 Handler = Callable[[Message[Any]], Coroutine[Any, Any, None]]
 PublisherFn = Callable[[], Awaitable[Any]]
+
+
+class PublishSink(Protocol):
+    """Where a bindings registry sends a publish; `Beacon.publish` implements it."""
+
+    async def __call__(
+        self,
+        topic: str,
+        payload: Any,
+        *,
+        qos: int = 0,
+        retain: bool = False,
+        model: type[BaseModel] | None = None,
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -59,11 +74,18 @@ def _parse_every(every: float | None) -> float | None:
 
 
 class MQTTBindings:
-    """Registry of MQTT subscription and publisher bindings declared via decorators."""
+    """Registry of MQTT subscription and publisher bindings declared via decorators.
 
-    def __init__(self) -> None:
+    Args:
+        publish: Sink that publishes a value on a topic — the app passes its
+            own `publish()`. Without one, calling a publisher binding raises
+            `PublisherNotBoundError`.
+    """
+
+    def __init__(self, publish: PublishSink | None = None) -> None:
         self._subs: list[SubscriptionSpec] = []
         self._pubs: list[PublisherSpec] = []
+        self._publish = publish
 
     @property
     def subscriptions(self) -> list[SubscriptionSpec]:
@@ -107,30 +129,58 @@ class MQTTBindings:
     ) -> Callable[[PublisherFn], PublisherFn]:
         """Register a publisher for `topic`, run every `every` seconds when set.
 
+        The decorated function publishes its return value whenever it is
+        awaited, so a binding without `every` is the ad-hoc publisher: call it
+        and the message goes out with this topic, qos, retain, and model.
+
         Args:
             topic: MQTT topic to publish to.
             qos: Publish QoS.
             retain: Set the MQTT retain flag on published messages.
             every: Interval in seconds for periodic publishing; `None` for a
-                non-periodic binding.
+                binding that only publishes when called.
             model: Optional pydantic model; the return value is validated
-                against it and serialized with `model_dump_json()`. Values
-                that fail validation are logged and not published.
+                against it and serialized with `model_dump_json()`. On the
+                periodic path values that fail validation are logged and not
+                published; a direct call raises the `ValidationError`.
         """
 
         every_s = _parse_every(every)
 
         def decorator(fn: PublisherFn) -> PublisherFn:
-            self._pubs.append(
-                PublisherSpec(
-                    topic=topic,
-                    qos=qos,
-                    retain=retain,
-                    every_s=every_s,
-                    fn=fn,
-                    model=model,
-                )
+            spec = PublisherSpec(
+                topic=topic,
+                qos=qos,
+                retain=retain,
+                every_s=every_s,
+                fn=fn,
+                model=model,
             )
-            return fn
+            self._pubs.append(spec)
+
+            # the periodic loop runs spec.fn (the undecorated function) while
+            # callers get this wrapper, so a scheduled binding called by hand
+            # publishes once, not twice
+            @wraps(fn)
+            async def publish_now() -> Any:
+                payload_obj = await fn()
+                await self._publish_spec(spec, payload_obj)
+                return payload_obj
+
+            return publish_now
 
         return decorator
+
+    # routes one publish through the owning app; bindings that were never
+    # attached to a Beacon have nowhere to send it
+    async def _publish_spec(self, spec: PublisherSpec, payload_obj: Any) -> None:
+        if self._publish is None:
+            raise PublisherNotBoundError(spec.topic)
+
+        await self._publish(
+            spec.topic,
+            payload_obj,
+            qos=spec.qos,
+            retain=spec.retain,
+            model=spec.model,
+        )

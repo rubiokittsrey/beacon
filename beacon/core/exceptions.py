@@ -5,6 +5,16 @@ class UnsupportedIntervalError(ValueError):
         super().__init__(f"Unsupported every='{every}'. Use e.g. 1, 0.5.")
 
 
+class PublisherNotBoundError(RuntimeError):
+    """Raised when a publisher binding is called with no app to publish through."""
+
+    def __init__(self, topic: str):
+        super().__init__(
+            f"cannot publish to '{topic}': these bindings are not attached to an app; "
+            "declare publishers with @app.bindings.publisher(...)"
+        )
+
+
 class TableDefinitionError(TypeError):
     """Raised when a `Table` subclass declares an invalid schema."""
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from paho.mqtt.client import topic_matches_sub
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from beacon.core.config import BeaconConfig, MQTTConfig, load_config
 from beacon.mqtt import BeaconMQTTClient, Message, MQTTBindings, PublisherSpec, SubscriptionSpec
@@ -47,8 +47,10 @@ class Beacon:
         self.uplink: Uplink | None = None
 
         # mqtt dsl bindings + subscription routing table (topic filter -> specs;
-        # a list so multiple handlers can bind to the same filter)
-        self.bindings = MQTTBindings()
+        # a list so multiple handlers can bind to the same filter). The
+        # bindings publish through this app, so calling a publisher binding
+        # sends its return value
+        self.bindings = MQTTBindings(publish=self.publish)
         self._mqtt_subscriptions: dict[str, list[SubscriptionSpec]] = {}
 
         # asyncio queues for mqtt communication:
@@ -161,6 +163,43 @@ class Beacon:
             # interpreter starts joining threads
             await self._shutdown()
 
+    async def publish(
+        self,
+        topic: str,
+        payload: Any,
+        *,
+        qos: int = 0,
+        retain: bool = False,
+        model: type[BaseModel] | None = None,
+    ) -> None:
+        """Publish `payload` to `topic` once.
+
+        What this awaits is the handoff to the MQTT client, not delivery: the
+        message is serialized and queued, and the client sends it on its next
+        pass. A publish issued while the broker link is down is dropped and
+        counted — `uplink.enqueue()` is the path for data that must survive an
+        outage.
+
+        Args:
+            topic: MQTT topic to publish to.
+            payload: Value to serialize as the payload. A `BaseModel` is
+                serialized with `model_dump_json()`, anything else with
+                `json.dumps`.
+            qos: Publish QoS.
+            retain: Set the MQTT retain flag on the message.
+            model: Optional pydantic model to validate `payload` against
+                before serializing; a `ValidationError` reaches the caller.
+        """
+        self.mqtt_command_queue.put_nowait(
+            {
+                "type": "publish",
+                "topic": topic,
+                "payload": self._encode_payload(model, payload),
+                "qos": qos,
+                "retain": retain,
+            }
+        )
+
     # the tables this app's engine owns: everything the app declared, plus the
     # uplink's own buffer table when the uplink is turned on
     def _storage_tables(self) -> list[type[Table]]:
@@ -244,14 +283,12 @@ class Beacon:
         while not self._shutdown_event.is_set():
             try:
                 payload_obj = await pub.fn()
-                self.mqtt_command_queue.put_nowait(
-                    {
-                        "type": "publish",
-                        "topic": pub.topic,
-                        "payload": self._encode_payload(pub, payload_obj),
-                        "qos": pub.qos,
-                        "retain": pub.retain,
-                    }
+                await self.publish(
+                    pub.topic,
+                    payload_obj,
+                    qos=pub.qos,
+                    retain=pub.retain,
+                    model=pub.model,
                 )
             except asyncio.CancelledError:
                 break
@@ -263,14 +300,14 @@ class Beacon:
             except (asyncio.CancelledError, TimeoutError):
                 break
 
-    # serializes a publisher's return value
+    # serializes an outbound payload
     # model declared -> validate + model_dump_json (a ValidationError propagates
-    # to _run_publisher, which logs it and skips the publish);
-    # bare BaseModel return -> model_dump_json; anything else -> json.dumps
-    def _encode_payload(self, pub: PublisherSpec, payload_obj: Any) -> str:
-        if pub.model is not None:
-            if not isinstance(payload_obj, pub.model):
-                payload_obj = pub.model.model_validate(payload_obj)
+    # to the caller; _run_publisher logs it and skips that tick);
+    # bare BaseModel -> model_dump_json; anything else -> json.dumps
+    def _encode_payload(self, model: type[BaseModel] | None, payload_obj: Any) -> str:
+        if model is not None:
+            if not isinstance(payload_obj, model):
+                payload_obj = model.model_validate(payload_obj)
             return payload_obj.model_dump_json()
 
         return encode_json(payload_obj)

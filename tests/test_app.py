@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from beacon.core.app import Beacon
 from beacon.core.config import BeaconConfig, StorageConfig, UplinkConfig
@@ -400,6 +400,51 @@ class TestRunPublisher:
         app._shutdown_event.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+class TestPublish:
+    async def test_queues_encoded_publish_command(self, app: Beacon) -> None:
+        await app.publish("devices/announce", {"status": "online"}, qos=1, retain=True)
+
+        cmd = app.mqtt_command_queue.get_nowait()
+        assert cmd["type"] == "publish"
+        assert cmd["topic"] == "devices/announce"
+        assert cmd["qos"] == 1
+        assert cmd["retain"] is True
+        assert json.loads(cmd["payload"]) == {"status": "online"}
+
+    async def test_model_validates_and_serializes(self, app: Beacon) -> None:
+        await app.publish("sensors/temp", {"sensor_id": "s1", "value": 2}, model=Reading)
+
+        cmd = app.mqtt_command_queue.get_nowait()
+        assert json.loads(cmd["payload"]) == {"sensor_id": "s1", "value": 2.0}
+
+    async def test_invalid_payload_raises_to_the_caller(self, app: Beacon) -> None:
+        # unlike the periodic path, an explicit publish reports its own failure
+        with pytest.raises(ValidationError):
+            await app.publish("sensors/temp", {"wrong": "shape"}, model=Reading)
+
+        assert app.mqtt_command_queue.empty()
+
+    async def test_publisher_binding_publishes_when_called(self, app: Beacon) -> None:
+        @app.bindings.publisher("devices/announce", qos=2)
+        async def announce() -> dict[str, Any]:
+            return {"device": app.name}
+
+        await announce()
+
+        cmd = app.mqtt_command_queue.get_nowait()
+        assert cmd["topic"] == "devices/announce"
+        assert cmd["qos"] == 2
+        assert json.loads(cmd["payload"]) == {"device": "test-beacon"}
+
+    def test_non_periodic_binding_gets_no_task(self, app: Beacon) -> None:
+        @app.bindings.publisher("devices/announce")
+        async def announce() -> dict[str, Any]:
+            return {}
+
+        app._start_mqtt_periodic_publisher()
+        assert app._tasks == []
 
 
 class TestStorageLifecycle:

@@ -4,7 +4,7 @@ An async Python framework for building MQTT-connected services. Beacon handles t
 
 ## Features
 
-- **Decorator DSL** — bind handlers to topic filters (wildcards `+`/`#` supported) with `@app.bindings.subscribe(...)` and register periodic publishers with `@app.bindings.publisher(..., every=...)`
+- **Decorator DSL** — bind handlers to topic filters (wildcards `+`/`#` supported) with `@app.bindings.subscribe(...)` and register publishers with `@app.bindings.publisher(...)`, periodic via `every=` or ad-hoc via `await app.publish(...)`
 - **Typed payloads** — declare a Pydantic model per binding with `model=`; inbound payloads are validated before your handler runs (invalid ones are logged and dropped), outbound ones are serialized with `model_dump_json()`
 - **Pydantic-native storage** — subclass `Table` and the same model validates payloads *and* defines a SQLite schema; an async active-record API (`save`/`get`/`filter`) with Django-style lookups over aiosqlite (WAL, additive migrations)
 - **Store-and-forward uplink** — `await app.uplink.enqueue(...)` buffers a message durably and returns; a background worker POSTs batches to your ingest endpoint, retries with exponential backoff while the network is down, and buries poison instead of blocking behind it
@@ -96,6 +96,33 @@ if __name__ == "__main__":
 `start()` loads the config, sets up logging and signal handlers, connects to the broker, registers subscriptions, and runs periodic publishers until shutdown is requested. Ctrl-C exits cleanly.
 
 Publishers can also declare `model=` to validate and serialize their return value via `model_dump_json()` — which handles `datetime`, enums, and nested models. A bare `BaseModel` return is serialized the same way even without a declared model.
+
+To publish outside a schedule — from a handler, on startup, in response to anything — call `app.publish()`:
+
+```python
+@app.bindings.subscribe("commands/reboot")
+async def on_reboot(msg: Message[None]) -> None:
+    await app.publish("devices/status", {"device": app.name, "state": "rebooting"}, qos=1)
+```
+
+Or bind the topic once by leaving `every` off, and publish by calling the function:
+
+```python
+class DeviceStatus(BaseModel):
+    device: str
+    state: str
+
+
+# no `every`: nothing schedules this, calling it publishes
+@app.bindings.publisher("devices/status", qos=1, model=DeviceStatus)
+async def announce() -> DeviceStatus:
+    return DeviceStatus(device=app.name, state="online")
+
+
+await announce()  # published with the topic, qos, retain, and model above
+```
+
+Either way the call returns once the message is queued for the client, not once the broker has it — and a publish issued while the connection is down is dropped (counted, and logged at WARNING on a rate limit). For data that must survive an outage, use the uplink.
 
 ## Storage
 

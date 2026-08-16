@@ -3,7 +3,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from beacon.core.exceptions import UnsupportedIntervalError
+from beacon.core.exceptions import PublisherNotBoundError, UnsupportedIntervalError
 from beacon.mqtt.decorators import MQTTBindings, PublisherSpec, SubscriptionSpec
 from beacon.mqtt.messages import Message
 
@@ -64,7 +64,8 @@ class TestPublisher:
             _noop_publisher
         )
 
-        assert returned is _noop_publisher
+        # the caller gets a wrapper that publishes; the spec keeps the original
+        assert returned.__wrapped__ is _noop_publisher  # type: ignore[attr-defined]
         assert len(bindings.publishers) == 1
         spec = bindings.publishers[0]
         assert isinstance(spec, PublisherSpec)
@@ -87,6 +88,70 @@ class TestPublisher:
         bindings = MQTTBindings()
         bindings.publisher("topic", model=_Payload)(_noop_publisher)
         assert bindings.publishers[0].model is _Payload
+
+
+class TestPublisherCall:
+    def _recording_bindings(self) -> tuple[MQTTBindings, list[dict[str, Any]]]:
+        published: list[dict[str, Any]] = []
+
+        async def sink(
+            topic: str,
+            payload: Any,
+            *,
+            qos: int = 0,
+            retain: bool = False,
+            model: type[BaseModel] | None = None,
+        ) -> None:
+            published.append(
+                {"topic": topic, "payload": payload, "qos": qos, "retain": retain, "model": model}
+            )
+
+        return MQTTBindings(publish=sink), published
+
+    async def test_calling_a_binding_publishes_its_return_value(self) -> None:
+        bindings, published = self._recording_bindings()
+
+        @bindings.publisher("devices/announce", qos=1, retain=True, model=_Payload)
+        async def announce() -> dict[str, Any]:
+            return {"value": 1.5}
+
+        returned = await announce()
+
+        assert published == [
+            {
+                "topic": "devices/announce",
+                "payload": {"value": 1.5},
+                "qos": 1,
+                "retain": True,
+                "model": _Payload,
+            }
+        ]
+        # the caller still gets what the function returned
+        assert returned == {"value": 1.5}
+
+    async def test_periodic_binding_called_by_hand_publishes_once(self) -> None:
+        bindings, published = self._recording_bindings()
+
+        @bindings.publisher("devices/heartbeat", every=5.0)
+        async def heartbeat() -> dict[str, Any]:
+            return {"status": "online"}
+
+        await heartbeat()
+
+        # the periodic loop runs spec.fn, so the schedule and the direct call
+        # are separate publishes rather than one call publishing twice
+        assert len(published) == 1
+        assert bindings.publishers[0].fn is not heartbeat
+
+    async def test_unbound_bindings_raise(self) -> None:
+        bindings = MQTTBindings()
+
+        @bindings.publisher("devices/announce")
+        async def announce() -> dict[str, Any]:
+            return {}
+
+        with pytest.raises(PublisherNotBoundError, match="devices/announce"):
+            await announce()
 
 
 class TestParseEvery:
