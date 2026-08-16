@@ -226,6 +226,8 @@ Inbound messages are matched against every registered topic filter (so `sensors/
 
 Under burst, every stage has a bound and a policy: at most `mqtt.max_concurrent_handlers` handler tasks run at once; while they are saturated the dispatcher stops draining the message queue, which holds up to `mqtt.message_queue_size` messages; once the queue is full the client sheds the *oldest* message (newest telemetry wins) — counted, and logged at WARNING on a rate limit. paho's network thread is never blocked, so keepalives keep flowing while the app catches up.
 
+Outbound, a publish that arrives while the broker link is down is dropped the same way — counted on `dropped_publishes` and warned about on the same rate limit, rather than queued forever. Publishing is best-effort by design; durability is the uplink's job.
+
 ## Project layout
 
 ```

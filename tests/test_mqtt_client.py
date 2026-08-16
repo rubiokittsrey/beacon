@@ -159,10 +159,31 @@ class TestHandlePublish:
         client._handle_publish({"topic": "", "payload": "x"})
         client.client.publish.assert_not_called()
 
-    def test_dropped_when_disconnected(self, client: BeaconMQTTClient) -> None:
+    def test_dropped_when_disconnected(
+        self, client: BeaconMQTTClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
         client.client.is_connected.return_value = False
-        client._handle_publish({"topic": "a/b", "payload": "x"})
+
+        with caplog.at_level(logging.WARNING):
+            client._handle_publish({"topic": "a/b", "payload": "x"})
+
         client.client.publish.assert_not_called()
+        # the loss is counted and visible, not swallowed at DEBUG
+        assert client.dropped_publishes == 1
+        assert "dropping publish topic=a/b" in caplog.text
+
+    def test_publish_drop_warning_is_rate_limited(
+        self, client: BeaconMQTTClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client.client.is_connected.return_value = False
+
+        with caplog.at_level(logging.WARNING):
+            for _ in range(5):
+                client._handle_publish({"topic": "a/b", "payload": "x"})
+
+        warnings = [r for r in caplog.records if "dropping publish" in r.message]
+        assert client.dropped_publishes == 5
+        assert len(warnings) == 1  # one heartbeat, not one line per drop
 
     def test_publishes_when_connected(self, client: BeaconMQTTClient) -> None:
         client.client.is_connected.return_value = True
@@ -172,6 +193,7 @@ class TestHandlePublish:
         client.client.publish.assert_called_once_with(
             "a/b", payload="hi", qos=1, retain=True
         )
+        assert client.dropped_publishes == 0
 
 
 class TestStop:

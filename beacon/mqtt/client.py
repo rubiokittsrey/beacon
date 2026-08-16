@@ -6,8 +6,9 @@ from typing import Any
 from paho.mqtt import client as paho_mqtt
 from paho.mqtt import enums
 
-# rate limit for the queue-full warning so a sustained burst logs a
-# heartbeat with a running total instead of one line per drop
+# rate limit for the drop warnings (inbound queue-full, outbound while
+# disconnected) so a sustained burst logs a heartbeat with a running total
+# instead of one line per drop
 _DROP_LOG_INTERVAL_S = 5.0
 
 
@@ -57,6 +58,10 @@ class BeaconMQTTClient:
         # messages shed when the (bounded) message queue is full
         self._dropped_total = 0
         self._last_drop_log = 0.0
+
+        # publishes dropped because the broker link was down
+        self._dropped_publishes = 0
+        self._last_publish_drop_log = 0.0
 
         # event loop captured in start(); paho callbacks run on the network
         # thread and need it to hand messages back to the loop thread
@@ -253,10 +258,31 @@ class BeaconMQTTClient:
         retain = bool(cmd.get("retain", False))
 
         if not self.client.is_connected():
-            self._logger.debug("publish dropped (not connected) topic=%s", topic)
+            self._drop_publish(topic)
             return
 
         try:
             self.client.publish(topic, payload=payload, qos=qos, retain=retain)
         except Exception:
             self._logger.exception("publish failed topic=%s", topic)
+
+    @property
+    def dropped_publishes(self) -> int:
+        """How many outbound publishes were dropped because the broker was unreachable."""
+        return self._dropped_publishes
+
+    # a publish issued while the link is down is gone: paho only queues QoS>0
+    # messages for a session it has already established, and holding them here
+    # would grow unbounded. Counting and warning on a rate limit at least makes
+    # the loss visible, like the inbound shed path; data that must survive an
+    # outage belongs in the uplink
+    def _drop_publish(self, topic: str) -> None:
+        self._dropped_publishes += 1
+        now = time.monotonic()
+        if now - self._last_publish_drop_log >= _DROP_LOG_INTERVAL_S:
+            self._last_publish_drop_log = now
+            self._logger.warning(
+                "not connected; dropping publish topic=%s (%d dropped since start)",
+                topic,
+                self._dropped_publishes,
+            )
