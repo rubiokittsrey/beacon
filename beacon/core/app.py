@@ -27,7 +27,12 @@ class Beacon:
         self.name = name
         self.config_path = config_path or Path("beacon.yaml")
 
+        # "stop requested": set by the signal handlers, polled by the publisher
+        # and dispatcher loops, and awaited by start(). Teardown itself is
+        # tracked separately by _shutdown_task, so start() can never return
+        # ahead of a teardown that is still running
         self._shutdown_event = asyncio.Event()
+        self._shutdown_task: asyncio.Task[None] | None = None
 
         # async runtime state: long-lived tasks (mqtt client, publishers,
         # message processor) and the ephemeral per-message handler tasks,
@@ -75,9 +80,9 @@ class Beacon:
             sig_name = signal.Signals(sig).name
             self.logger.info("received shutdown signal: %s", sig_name)
 
-            # dont add to the tracked tasks (self._tasks)
-            # will cause a maximum recursion depth error
-            asyncio.create_task(self._shutdown())  # noqa: RUF006
+            # only signal the request; start() runs the teardown inside its own
+            # frame, so the process cannot exit with it half-finished
+            self._shutdown_event.set()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
@@ -87,10 +92,14 @@ class Beacon:
                 signal.signal(sig, lambda *_args, sig=sig: _request_shutdown(sig))
 
     async def _shutdown(self) -> None:
-        # idempotent shutdown guard
-        if self._shutdown_event.is_set():
-            return
+        # idempotent: the first caller owns the teardown and every later one
+        # awaits that same task, so no caller can run on past a teardown that
+        # is still stopping clients
+        if self._shutdown_task is None:
+            self._shutdown_task = asyncio.create_task(self._teardown())
+        await self._shutdown_task
 
+    async def _teardown(self) -> None:
         self.logger.info("shutting down")
         self._shutdown_event.set()
 
@@ -146,8 +155,11 @@ class Beacon:
             raise
 
         finally:
-            if not self._shutdown_event.is_set():
-                await self._shutdown()
+            # unconditional and idempotent: start() returns only once the
+            # teardown it awaits here has actually finished, so the storage
+            # engine is closed and the logging listener stopped before the
+            # interpreter starts joining threads
+            await self._shutdown()
 
     # brings up the storage engine only when tables are declared; an app with
     # no Table subclasses imported skips storage entirely (zero behavior change)

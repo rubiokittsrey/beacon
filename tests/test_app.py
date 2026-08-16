@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import os
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -433,3 +435,67 @@ class TestStorageLifecycle:
         assert Table._engine is None
         assert app.storage is not None
         assert app.storage._conn is None
+
+
+class TestShutdownSequencing:
+    async def test_start_returns_only_after_teardown_finishes(
+        self, app: Beacon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A SIGINT must not let start() return with the teardown half-done.
+
+        Setting the shutdown event used to be the first thing the teardown
+        did, so start() woke and returned while the teardown was still on its
+        first await — leaving the sqlite connection and the logging listener
+        alive, and their non-daemon threads hanging the interpreter at exit.
+        """
+
+        class Thing(Table):
+            id: int | None = field(pk=True, auto=True)
+            name: str
+
+        async def _noop() -> None:
+            return None
+
+        # keep the app off the real config file, the real logs/ directory,
+        # and a real broker; the shutdown path is what is under test
+        monkeypatch.setattr(app, "_load_config", _noop)
+        monkeypatch.setattr(app, "_start_mqtt_client", _noop)
+        monkeypatch.setattr("beacon.core.app.new_run_log_dir", lambda _base: tmp_path)
+        app._config = BeaconConfig(storage=StorageConfig(path=":memory:"))
+
+        root_handlers = logging.getLogger().handlers[:]
+
+        async def interrupt() -> None:
+            await asyncio.sleep(0.05)
+            os.kill(os.getpid(), signal.SIGINT)
+
+        interrupter = asyncio.create_task(interrupt())
+        try:
+            await asyncio.wait_for(app.start(), timeout=5)
+        finally:
+            interrupter.cancel()
+            logging.getLogger().handlers[:] = root_handlers
+
+        assert app.storage is not None
+        assert app.storage._conn is None
+        assert Table._engine is None
+        assert app._async_logging is not None
+        assert app._async_logging._listener is None
+
+    async def test_shutdown_is_idempotent_and_concurrent_callers_wait(
+        self, app: Beacon
+    ) -> None:
+        class Thing(Table):
+            id: int | None = field(pk=True, auto=True)
+            name: str
+
+        app._config = BeaconConfig(storage=StorageConfig(path=":memory:"))
+        await app._start_storage()
+
+        # both callers must observe a finished teardown, and it must run once
+        await asyncio.gather(app._shutdown(), app._shutdown())
+
+        assert app.storage is not None
+        assert app.storage._conn is None
+        assert app._shutdown_task is not None
+        assert app._shutdown_task.done()
