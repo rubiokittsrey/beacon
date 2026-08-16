@@ -1,5 +1,7 @@
 # Beacon
 
+[![CI](https://github.com/rubiokittsrey/beacon/actions/workflows/ci.yml/badge.svg)](https://github.com/rubiokittsrey/beacon/actions/workflows/ci.yml)
+
 An async Python framework for building MQTT-connected services. Beacon handles the runtime plumbing — connection management, message routing, periodic publishing, logging, and graceful shutdown — so an app is just a config file and a few decorated functions.
 
 ## Features
@@ -205,15 +207,7 @@ The worker claims up to `batch_size` records in FIFO order and POSTs them as one
 - **Crash-safe** — the buffer lives in the app's SQLite database, so a record that `enqueue()` returned survives a kill. Records left inflight by a crash or a mid-send SIGINT are recovered to pending on the next start; shutdown does no flush heroics because it doesn't need any.
 - **Disabled by default** — enqueuing while `uplink.enabled` is false raises `UplinkNotEnabledError` rather than silently dropping the message.
 
-`scripts/sim_ingest_server.py` is a local stand-in for the cloud: it accepts batches, dedupes on `record_id`, and can misbehave on demand.
-
-```bash
-uv run python scripts/sim_ingest_server.py --state seen.json   # terminal 1
-uv run python scripts/collector.py                             # terminal 2 (uplink.enabled: true)
-uv run python scripts/sim_air_sensor.py                        # terminal 3
-```
-
-Kill the ingest server and the collector keeps accepting readings — they pile up in the `outbound` table while the worker backs off. Start it again and the backlog drains, with `GET /stats` reporting duplicates as 0. `--fail-rate 0.5` shows retry under a flaky link, and `--reject air` shows a poison batch being buried.
+Section 7 of [`scripts/usage_guide.py`](scripts/usage_guide.py) runs the "store" half without a server: `enqueue()` returns, the record sits in the `outbound` table as `pending`, and nothing is lost — which is exactly what an offline device looks like. Point a real app at a reachable endpoint and the same backlog drains on its own.
 
 ## How it works
 
@@ -271,6 +265,8 @@ uv run pytest          # run the test suite
 uv run ruff check .    # lint
 uv run mypy beacon     # type check
 ```
+
+The same three run on every push and pull request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml), against a locked `uv sync`.
 
 To see what a live app's tasks are doing — a stuck handler, the uplink worker mid-backoff — Python 3.14's asyncio introspection CLI attaches to the running process by pid:
 
