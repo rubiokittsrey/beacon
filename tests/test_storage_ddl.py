@@ -91,6 +91,20 @@ def test_tablename_override() -> None:
     assert len(registry) == 1
 
 
+def test_internal_tables_stay_out_of_the_registry() -> None:
+    # framework-internal tables are owned by the component that declares
+    # them, so importing that component adds nothing to an app's schema
+    class Bookkeeping(Table):
+        __internal__ = True
+
+        id: int | None = field(pk=True, auto=True)
+
+    assert "bookkeeping" not in registry
+    assert len(registry) == 0
+    # still a usable table: it just has to be handed to an engine explicitly
+    assert [spec.name for spec in Bookkeeping.columns()] == ["id"]
+
+
 def test_duplicate_tablename_raises() -> None:
     class Reading(Table):
         id: int | None = field(pk=True, auto=True)

@@ -97,6 +97,9 @@ class StorageEngine:
     `Table`; `stop()` is idempotent. Reads are validated through the table
     model, the same validation-at-the-edge policy inbound payloads get.
 
+    The engine creates the tables passed as `tables`, defaulting to every
+    app-declared table in the registry.
+
     Writes are group-committed: a statement run with `commit=True` awaits a
     shared commit scheduled `commit_delay` seconds out, so concurrent writes
     (a burst of handler `save()` calls) share one fsync instead of paying one
@@ -106,9 +109,19 @@ class StorageEngine:
         StorageNotReadyError: If a raw query method runs before `start()`.
     """
 
-    def __init__(self, path: str | Path = "beacon.db", *, commit_delay: float = 0.01) -> None:
+    def __init__(
+        self,
+        path: str | Path = "beacon.db",
+        *,
+        tables: Sequence[type[Table]] | None = None,
+        commit_delay: float = 0.01,
+    ) -> None:
         self.path = str(path)
         self.commit_delay = commit_delay
+        # the tables this engine owns. None falls back to every app-declared
+        # table, the single-engine default; passing them explicitly is what
+        # lets a second engine own a disjoint set of its own
+        self._tables = list(tables) if tables is not None else None
         self._conn: aiosqlite.Connection | None = None
         self._started = False
         self._logger = logging.getLogger(__name__)
@@ -139,7 +152,7 @@ class StorageEngine:
 
         Table.bind_engine(self)
         self._started = True
-        self._logger.info("storage engine ready (%d tables)", len(registry))
+        self._logger.info("storage engine ready (%d tables)", len(self.tables))
 
     async def stop(self) -> None:
         """Flush any pending commit, close, and unbind the active-record API (idempotent)."""
@@ -187,9 +200,14 @@ class StorageEngine:
         else:
             pending.set_result(None)
 
+    @property
+    def tables(self) -> list[type[Table]]:
+        """The tables this engine creates, migrates, and owns."""
+        return self._tables if self._tables is not None else registry.tables
+
     async def _create_tables(self) -> None:
         assert self._conn is not None
-        for table_cls in registry.tables:
+        for table_cls in self.tables:
             tablename = table_cls.__tablename__
             specs = columns_for(table_cls)
 

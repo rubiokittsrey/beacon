@@ -10,10 +10,11 @@ import pytest
 from pydantic import BaseModel
 
 from beacon.core.app import Beacon
-from beacon.core.config import BeaconConfig, StorageConfig
+from beacon.core.config import BeaconConfig, StorageConfig, UplinkConfig
 from beacon.mqtt.decorators import PublisherSpec, SubscriptionSpec
 from beacon.mqtt.messages import Message
 from beacon.storage import Table, field
+from beacon.uplink import OutboundRecord
 
 
 class Reading(BaseModel):
@@ -405,10 +406,41 @@ class TestStorageLifecycle:
     def _configure(self, app: Beacon) -> None:
         app._config = BeaconConfig(storage=StorageConfig(path=":memory:"))
 
-    async def test_skipped_when_no_tables_registered(self, app: Beacon) -> None:
+    async def test_skipped_when_no_tables_and_uplink_disabled(self, app: Beacon) -> None:
+        # an app that stores nothing and forwards nothing opens no database;
+        # the uplink's own table is internal, so importing beacon no longer
+        # puts one in the registry on every app's behalf
         self._configure(app)
         await app._start_storage()
         assert app.storage is None
+
+    async def test_uplink_enabled_starts_storage_without_app_tables(self, app: Beacon) -> None:
+        app._config = BeaconConfig(
+            storage=StorageConfig(path=":memory:"),
+            uplink=UplinkConfig(enabled=True),
+        )
+
+        await app._start_storage()
+        try:
+            assert app.storage is not None
+            assert app.storage.tables == [OutboundRecord]
+            # the buffer table is really there, not just declared
+            assert await app.storage.count(OutboundRecord, {}) == 0
+        finally:
+            await app.storage.stop()  # type: ignore[union-attr]
+
+    async def test_app_tables_do_not_carry_the_uplink_buffer(self, app: Beacon) -> None:
+        class Thing(Table):
+            id: int | None = field(pk=True, auto=True)
+            name: str
+
+        self._configure(app)
+        await app._start_storage()
+        try:
+            assert app.storage is not None
+            assert app.storage.tables == [Thing]
+        finally:
+            await app.storage.stop()  # type: ignore[union-attr]
 
     async def test_engine_starts_and_binds_when_tables_registered(self, app: Beacon) -> None:
         class Thing(Table):

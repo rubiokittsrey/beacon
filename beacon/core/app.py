@@ -10,8 +10,8 @@ from pydantic import ValidationError
 
 from beacon.core.config import BeaconConfig, MQTTConfig, load_config
 from beacon.mqtt import BeaconMQTTClient, Message, MQTTBindings, PublisherSpec, SubscriptionSpec
-from beacon.storage import StorageEngine, registry
-from beacon.uplink import Uplink
+from beacon.storage import StorageEngine, Table, registry
+from beacon.uplink import OutboundRecord, Uplink
 from beacon.utils.logging_conf import AsyncLogging, LoggingConfig, new_run_log_dir
 from beacon.utils.serialization import encode_json
 
@@ -161,24 +161,37 @@ class Beacon:
             # interpreter starts joining threads
             await self._shutdown()
 
-    # brings up the storage engine only when tables are declared; an app with
-    # no Table subclasses imported skips storage entirely (zero behavior change)
+    # the tables this app's engine owns: everything the app declared, plus the
+    # uplink's own buffer table when the uplink is turned on
+    def _storage_tables(self) -> list[type[Table]]:
+        assert self._config is not None
+        if self._config.uplink.enabled:
+            return [*registry.tables, OutboundRecord]
+        return registry.tables
+
+    # brings up the storage engine only when there is something to store: an
+    # app that declares no Table and leaves the uplink off touches no database
     async def _start_storage(self) -> None:
-        if not registry.tables:
-            self.logger.debug("no tables registered; skipping storage engine")
+        assert self._config is not None
+        tables = self._storage_tables()
+        if not tables:
+            self.logger.debug("no tables declared and uplink disabled; skipping storage engine")
             return
 
-        assert self._config is not None
         storage_cfg = self._config.storage
-        self.storage = StorageEngine(storage_cfg.path, commit_delay=storage_cfg.commit_delay)
+        self.storage = StorageEngine(
+            storage_cfg.path,
+            tables=tables,
+            commit_delay=storage_cfg.commit_delay,
+        )
         await self.storage.start()
 
-    # the uplink rides the shared storage engine (started just before this), so
-    # it is always constructed — even when disabled — so enqueue() raises
-    # UplinkNotEnabledError instead of an AttributeError on a None uplink
+    # the uplink rides the shared storage engine (started just before this,
+    # and guaranteed up whenever the uplink is enabled). It is constructed
+    # even when disabled so enqueue() raises UplinkNotEnabledError instead of
+    # an AttributeError on a None uplink
     async def _start_uplink(self) -> None:
         assert self._config is not None
-        assert self.storage is not None
 
         self.uplink = Uplink(self.storage, self._config.uplink)
         if self._config.uplink.enabled:

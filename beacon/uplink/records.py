@@ -37,6 +37,9 @@ class OutboundRecord(Table):
     """
 
     __tablename__ = "outbound"
+    # the uplink's own table, not the app's: it is created only when the
+    # uplink is enabled, so importing beacon does not put it in every database
+    __internal__ = True
 
     seq: int | None = field(pk=True, auto=True)
     record_id: str = field(unique=True, default_factory=_new_record_id)

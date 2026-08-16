@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 from beacon.core.config import UplinkConfig
-from beacon.core.exceptions import UplinkNotEnabledError
+from beacon.core.exceptions import UplinkNotEnabledError, UplinkNotReadyError
 from beacon.storage import StorageEngine
 from beacon.uplink.buffer import OutboundBuffer
 from beacon.uplink.http import HTTPUplinkTransport
@@ -22,17 +22,37 @@ class Uplink:
     than silently dropping data.
     """
 
-    def __init__(self, engine: StorageEngine, config: UplinkConfig) -> None:
+    def __init__(self, engine: StorageEngine | None, config: UplinkConfig) -> None:
         self._enabled = config.enabled
-        self._buffer = OutboundBuffer(engine, max_records=config.buffer.max_records)
         self._transport = _build_transport(config)
-        self._worker = UplinkWorker(self._buffer, self._transport, config.buffer)
+        # a disabled uplink in an app that declares no table has no engine to
+        # buffer into; it is still constructed so enqueue() answers with
+        # UplinkNotEnabledError, which is the mistake actually being made
+        self._buffer = (
+            OutboundBuffer(engine, max_records=config.buffer.max_records)
+            if engine is not None
+            else None
+        )
+        self._worker = (
+            UplinkWorker(self._buffer, self._transport, config.buffer)
+            if self._buffer is not None
+            else None
+        )
         self._shutdown = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._logger = logging.getLogger(__name__)
 
     async def start(self) -> None:
-        """Open the transport, recover interrupted records, and run the drain worker."""
+        """Open the transport, recover interrupted records, and run the drain worker.
+
+        Raises:
+            UplinkNotReadyError: If the uplink has no storage engine to buffer
+                into; an enabled uplink always brings one up.
+        """
+        if self._buffer is None or self._worker is None:
+            what = "no storage engine; the outbound buffer has nowhere to persist"
+            raise UplinkNotReadyError(what)
+
         self._shutdown.clear()
         await self._transport.start()
         await self._buffer.recover()
@@ -53,7 +73,7 @@ class Uplink:
         Raises:
             UplinkNotEnabledError: If the uplink is disabled in config.
         """
-        if not self._enabled:
+        if not self._enabled or self._buffer is None:
             raise UplinkNotEnabledError(stream)
         return await self._buffer.enqueue(stream, encode_json(data))
 

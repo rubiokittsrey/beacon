@@ -199,7 +199,10 @@ async def forward_reading(msg: Message[TempReading]) -> None:
 # the "store" half without a server: no worker runs, so the record stays
 # buffered — exactly what an offline device looks like
 async def _uplink_demo() -> None:
-    engine = StorageEngine(":memory:")
+    # OutboundRecord is framework-internal, so it is not in the table registry
+    # an engine defaults to; the uplink's owner passes it in. `app.start()`
+    # does this for you whenever uplink.enabled is true
+    engine = StorageEngine(":memory:", tables=[OutboundRecord])
     await engine.start()
     try:
         uplink = Uplink(engine, uplink_cfg)

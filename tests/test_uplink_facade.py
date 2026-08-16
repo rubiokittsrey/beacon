@@ -5,15 +5,13 @@ from pydantic import BaseModel
 
 from beacon.core.config import UplinkConfig
 from beacon.core.exceptions import UplinkNotEnabledError
-from beacon.storage import StorageEngine, registry
+from beacon.storage import StorageEngine
 from beacon.uplink import Uplink
 from beacon.uplink.records import OutboundRecord
 
 
 async def _started_engine(path: str | Path) -> StorageEngine:
-    if registry.get(OutboundRecord.__tablename__) is None:
-        registry.register(OutboundRecord)
-    engine = StorageEngine(path)
+    engine = StorageEngine(path, tables=[OutboundRecord])
     await engine.start()
     return engine
 

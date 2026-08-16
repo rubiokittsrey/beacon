@@ -1,16 +1,14 @@
 from pathlib import Path
 
-from beacon.storage import StorageEngine, registry
+from beacon.storage import StorageEngine
 from beacon.uplink.buffer import OutboundBuffer
 from beacon.uplink.records import OutboundRecord, RecordState
 
 
 async def _started_engine(path: str | Path) -> StorageEngine:
-    # OutboundRecord registers at import time; the autouse registry clear
-    # wipes that, so re-register before the engine builds its tables
-    if registry.get(OutboundRecord.__tablename__) is None:
-        registry.register(OutboundRecord)
-    engine = StorageEngine(path)
+    # OutboundRecord is framework-internal, so it never enters the registry;
+    # the uplink hands it to its engine explicitly, exactly as done here
+    engine = StorageEngine(path, tables=[OutboundRecord])
     await engine.start()
     return engine
 

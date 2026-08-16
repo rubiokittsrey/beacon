@@ -20,7 +20,11 @@ def _snake_case(name: str) -> str:
 
 
 class TableRegistry:
-    """Registry of declared tables; subclassing `Table` registers (import = declaration)."""
+    """Registry of app-declared tables; subclassing `Table` registers (import = declaration).
+
+    Tables marked `__internal__` are left out: they belong to the framework
+    component that declares them, which hands them to an engine itself.
+    """
 
     def __init__(self) -> None:
         self._tables: dict[str, type[Table]] = {}
@@ -65,6 +69,10 @@ class Table(BaseModel):
     """
 
     __tablename__: ClassVar[str]
+    # framework-internal tables stay out of the registry: whoever owns one
+    # passes it to an engine explicitly, so merely importing the component
+    # that declares it does not put a table in every app's database
+    __internal__: ClassVar[bool] = False
     _engine: ClassVar["StorageEngine | None"] = None
 
     @classmethod
@@ -85,7 +93,8 @@ class Table(BaseModel):
 
         specs = columns_for(cls)
         _validate_definition(cls.__tablename__, specs)
-        registry.register(cls)
+        if not cls.__internal__:
+            registry.register(cls)
 
     @classmethod
     def columns(cls) -> list[ColumnSpec]:

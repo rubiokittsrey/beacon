@@ -130,7 +130,7 @@ kitchen = await TempReading.get(sensor_id="kitchen")
 count = await TempReading.count(sensor_id="kitchen")
 ```
 
-The engine starts automatically inside `app.start()` whenever any `Table` is declared (and is skipped entirely if none are), then closes on shutdown. Point it at a file or an in-memory database via config:
+The engine starts automatically inside `app.start()` whenever any `Table` is declared or the uplink is enabled, then closes on shutdown. It is skipped entirely otherwise — an app that stores nothing and forwards nothing opens no database file at all. Point it at a file or an in-memory database via config:
 
 ```yaml
 storage:

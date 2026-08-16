@@ -3,7 +3,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 
 from beacon.core.config import UplinkBufferConfig, UplinkRetryConfig
-from beacon.storage import StorageEngine, registry
+from beacon.storage import StorageEngine
 from beacon.uplink.buffer import OutboundBuffer
 from beacon.uplink.records import OutboundRecord, RecordState, SendResult
 from beacon.uplink.worker import UplinkWorker
@@ -31,9 +31,7 @@ class FakeTransport:
 
 
 async def _started_engine(path: str | Path) -> StorageEngine:
-    if registry.get(OutboundRecord.__tablename__) is None:
-        registry.register(OutboundRecord)
-    engine = StorageEngine(path)
+    engine = StorageEngine(path, tables=[OutboundRecord])
     await engine.start()
     return engine
 
